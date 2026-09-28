@@ -65,3 +65,18 @@ Phase 1 intentionally leaves full registration/OAuth, billing, admin controls, a
 - The existing frontend still contains the original sample-project experience. A follow-up client integration should use `POST /api/v1/projects` and SSE instead of the legacy browser demo path; live media is intentionally not fabricated when the backend is absent.
 - Authentication has a signed-token verification boundary and development identity switch, but registration, password reset, Google OAuth, and session issuance belong to the auth phase.
 - Automatic plan credits, billing adapters, face tracking, caption rendering, and persistent editor revisions are not claimed as complete by this phase.
+
+
+## Extended production seams
+
+The API now includes email/password registration and login with PBKDF2 password hashes, persisted session revocation, ownership-scoped source/export streams, signed URL support for S3-compatible storage, plan entitlements, atomic monthly processing-credit reservations, admin overview/job inspection, brand-kit/template persistence, and a scheduled `bun run cleanup` task.
+
+The worker retains source media through the configured object-storage adapter, writes transcript-based SRT captions during render, applies aspect-ratio-safe FFmpeg scaling/cropping, checks cancellation between stages, and records retry metadata. Face tracking, active-speaker detection, karaoke word animation, payment webhooks, email delivery, and Google OAuth still require dedicated providers; the API does not claim those features are implemented.
+
+Run cleanup from a scheduler (for example, a daily Cloud Run Job or cron):
+
+```bash
+bun run cleanup
+```
+
+Storage lifecycle is controlled by `TEMP_RETENTION_HOURS`, `SOURCE_RETENTION_DAYS`, and `EXPORT_RETENTION_DAYS`. Set `STORAGE_DRIVER=s3` with the S3/R2/GCS-compatible endpoint and credentials in production. Never expose those credentials to Vite.

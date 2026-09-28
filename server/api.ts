@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import crypto from 'node:crypto';
+import { Readable } from 'node:stream';
 import express, { type Express, type NextFunction, type Request, type Response } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
@@ -13,6 +15,8 @@ import type { Metrics } from './metrics.js';
 import type { Queue } from 'bullmq';
 import type { QueuePayload } from './types.js';
 import { parseYouTubeUrl } from './services/youtube.js';
+import type { ObjectStorage } from './services/storage.js';
+import { requireAuth, createSessionToken, hashPassword, hashSessionToken, verifyPassword } from './auth.js';
 
 const createProjectSchema = z.object({
   youtubeUrl: z.string().trim().min(1).max(2048), contentGoal: z.string().max(80).optional(), hookType: z.string().max(80).optional(),
@@ -20,6 +24,25 @@ const createProjectSchema = z.object({
   requestedClipCount: z.coerce.number().int().min(1).max(10).default(3),
 });
 const renderSchema = z.object({ quality: z.enum(['draft', 'standard', 'high', 'ultra']).default('standard'), aspectRatio: z.enum(['9:16', '16:9', '1:1', '4:5']).default('9:16') });
+
+const authSchema = z.object({ email: z.string().trim().email().max(320), password: z.string().min(12).max(128) });
+const brandKitSchema = z.object({ name: z.string().trim().min(1).max(80), data: z.record(z.string(), z.unknown()).default({}), isDefault: z.boolean().default(false) });
+const templateSchema = z.object({ name: z.string().trim().min(1).max(80), data: z.record(z.string(), z.unknown()).default({}) });
+const adminLimitSchema = z.coerce.number().int().min(1).max(200).default(50);
+
+function issueSession(req: Request, user: { id: string; email: string; role: 'user' | 'admin' }, config: AppConfig, repository: ProjectRepository) {
+  const session = createSessionToken(user, config.AUTH_SECRET);
+  return repository.createSession(user.id, hashSessionToken(session.token), session.expiresAt).then(() => ({
+    token: session.token,
+    expiresAt: session.expiresAt.toISOString(),
+    user: { id: user.id, email: user.email, role: user.role },
+    requestId: String(req.id),
+  }));
+}
+
+function requireAdmin(req: Request) {
+  if (req.user?.role !== 'admin') throw new AppError('FORBIDDEN', 'Administrator access is required.', 403);
+}
 
 function asyncRoute(handler: (req: Request, res: Response) => Promise<void>) {
   return (req: Request, res: Response, next: NextFunction) => { void handler(req, res).catch(next); };
@@ -29,7 +52,7 @@ function send<T>(req: Request, res: Response, data: T, status = 200) {
   res.status(status).json({ success: true, data, error: null, requestId: String(req.id) });
 }
 
-export interface ApiDependencies { config: AppConfig; repository: ProjectRepository; queue: Queue<QueuePayload>; metrics: Metrics; logger: pino.Logger; }
+export interface ApiDependencies { config: AppConfig; repository: ProjectRepository; queue: Queue<QueuePayload>; metrics: Metrics; logger: pino.Logger; storage: ObjectStorage; }
 
 export function createApp(deps: ApiDependencies): Express {
   const app = express();
@@ -45,8 +68,28 @@ export function createApp(deps: ApiDependencies): Express {
   app.get('/ready', asyncRoute(async (_req, res) => { await deps.repository.health(); await deps.queue.waitUntilReady(); res.json({ status: 'ready' }); }));
   app.get('/metrics', (_req, res) => res.json(deps.metrics.snapshot()));
 
+  const authApi = express.Router();
+  authApi.post('/register', asyncRoute(async (req, res) => {
+    const parsed = authSchema.safeParse(req.body);
+    if (!parsed.success) throw formatZodError(parsed.error);
+    const user = await deps.repository.registerUser({ email: parsed.data.email, passwordHash: await hashPassword(parsed.data.password) });
+    send(req, res, await issueSession(req, user, deps.config, deps.repository), 201);
+  }));
+  authApi.post('/login', asyncRoute(async (req, res) => {
+    const parsed = authSchema.safeParse(req.body);
+    if (!parsed.success) throw formatZodError(parsed.error);
+    const user = await deps.repository.findUserByEmail(parsed.data.email);
+    if (!user || !user.passwordHash || !await verifyPassword(parsed.data.password, user.passwordHash)) throw new AppError('INVALID_CREDENTIALS', 'Email or password is incorrect.', 401);
+    send(req, res, await issueSession(req, user, deps.config, deps.repository));
+  }));
+  authApi.post('/logout', requireAuth(deps.config, deps.repository.isSessionRevoked.bind(deps.repository)), asyncRoute(async (req, res) => {
+    if (req.sessionToken) await deps.repository.revokeSession(hashSessionToken(req.sessionToken));
+    send(req, res, { loggedOut: true });
+  }));
+  app.use('/api/v1/auth', authApi);
+
   const api = express.Router();
-  api.use(requireAuth(deps.config));
+  api.use(requireAuth(deps.config, deps.repository.isSessionRevoked.bind(deps.repository)));
 
   api.get('/projects', asyncRoute(async (req, res) => { send(req, res, await deps.repository.listProjects(req.user!.id)); }));
   api.get('/projects/:projectId', asyncRoute(async (req, res) => {
@@ -54,15 +97,72 @@ export function createApp(deps: ApiDependencies): Express {
     if (!project) throw notFound('Project not found.');
     send(req, res, project);
   }));
+  api.get('/projects/:projectId/source', asyncRoute(async (req, res) => {
+    const project = await deps.repository.getProject(req.user!.id, req.params.projectId);
+    if (!project) throw notFound('Project not found.');
+    const storageKey = await deps.repository.getSourceStorageKey(req.user!.id, project.id);
+    if (!storageKey) throw new AppError('SOURCE_NOT_READY', 'The source preview is not ready yet.', 404);
+    res.type('mp4').set('Cache-Control', 'private, max-age=300');
+    (deps.storage.open(storageKey) as Readable).pipe(res);
+  }));
+  api.get('/projects/:projectId/source-url', asyncRoute(async (req, res) => {
+    const project = await deps.repository.getProject(req.user!.id, req.params.projectId);
+    if (!project) throw notFound('Project not found.');
+    const storageKey = await deps.repository.getSourceStorageKey(req.user!.id, project.id);
+    if (!storageKey) throw new AppError('SOURCE_NOT_READY', 'The source preview is not ready yet.', 404);
+    const url = deps.storage.createSignedUrl ? await deps.storage.createSignedUrl(storageKey, 300) : `/api/v1/projects/${encodeURIComponent(project.id)}/source`;
+    send(req, res, { url, expiresInSeconds: 300 });
+  }));
+
   api.post('/projects', asyncRoute(async (req, res) => {
     const parsed = createProjectSchema.safeParse(req.body);
     if (!parsed.success) throw formatZodError(parsed.error);
     const { normalizedUrl, videoId } = parseYouTubeUrl(parsed.data.youtubeUrl);
-    const result = await deps.repository.createProject({ userId: req.user!.id, sourceUrl: normalizedUrl, sourceVideoId: videoId });
+    const entitlements = await deps.repository.getPlanEntitlements(req.user!.id);
+    if (parsed.data.requestedClipCount > entitlements.maxClipsPerJob) throw new AppError('CLIP_LIMIT_REACHED', `Your ${entitlements.code} plan allows up to ${entitlements.maxClipsPerJob} clips per job.`, 402);
+    await deps.repository.reserveCredit(req.user!.id, 'analysis', { sourceVideoId: videoId, requestedClipCount: parsed.data.requestedClipCount });
+    const result = await deps.repository.createProject({ userId: req.user!.id, sourceUrl: normalizedUrl, sourceVideoId: videoId, jobMetadata: { contentGoal: parsed.data.contentGoal, hookType: parsed.data.hookType, preferredDuration: parsed.data.preferredDuration, aspectRatio: parsed.data.aspectRatio, requestedClipCount: parsed.data.requestedClipCount } });
     const payload: QueuePayload = { kind: 'analysis', jobId: result.job.id, projectId: result.project.id, userId: req.user!.id, sourceUrl: normalizedUrl, sourceVideoId: videoId, preferredDuration: parsed.data.preferredDuration, requestedClipCount: parsed.data.requestedClipCount };
     await deps.queue.add('analysis', payload, { jobId: result.job.id });
     deps.metrics.increment('jobs.queued');
     send(req, res, { projectId: result.project.id, jobId: result.job.id, status: result.job.state }, 202);
+  }));
+
+  api.get('/account/plan', asyncRoute(async (req, res) => { send(req, res, await deps.repository.getPlanEntitlements(req.user!.id)); }));
+  api.get('/brand-kits', asyncRoute(async (req, res) => { send(req, res, await deps.repository.listBrandKits(req.user!.id)); }));
+  api.post('/brand-kits', asyncRoute(async (req, res) => {
+    const parsed = brandKitSchema.safeParse(req.body);
+    if (!parsed.success) throw formatZodError(parsed.error);
+    send(req, res, await deps.repository.createBrandKit(req.user!.id, parsed.data), 201);
+  }));
+  api.get('/templates', asyncRoute(async (req, res) => { send(req, res, await deps.repository.listTemplates(req.user!.id)); }));
+  api.post('/templates', asyncRoute(async (req, res) => {
+    const parsed = templateSchema.safeParse(req.body);
+    if (!parsed.success) throw formatZodError(parsed.error);
+    send(req, res, await deps.repository.createTemplate(req.user!.id, parsed.data), 201);
+  }));
+
+  api.get('/admin/overview', asyncRoute(async (req, res) => { requireAdmin(req); send(req, res, await deps.repository.getAdminOverview()); }));
+  api.get('/admin/jobs', asyncRoute(async (req, res) => {
+    requireAdmin(req);
+    const parsed = adminLimitSchema.safeParse(req.query.limit ?? 50);
+    if (!parsed.success) throw formatZodError(parsed.error);
+    send(req, res, await deps.repository.listAdminJobs(parsed.data));
+  }));
+
+  api.get('/exports', asyncRoute(async (req, res) => { send(req, res, await deps.repository.listExports(req.user!.id)); }));
+  api.get('/exports/:exportId/download', asyncRoute(async (req, res) => {
+    const exportRecord = await deps.repository.getExport(req.user!.id, req.params.exportId);
+    if (!exportRecord) throw notFound('Export not found.');
+    res.type(String(exportRecord.content_type).split('/')[1] || 'mp4').set('Content-Disposition', `attachment; filename="clipforge-${req.params.exportId}.mp4"`);
+    (deps.storage.open(String(exportRecord.storage_key)) as Readable).pipe(res);
+  }));
+
+  api.get('/exports/:exportId/url', asyncRoute(async (req, res) => {
+    const exportRecord = await deps.repository.getExport(req.user!.id, req.params.exportId);
+    if (!exportRecord) throw notFound('Export not found.');
+    const url = deps.storage.createSignedUrl ? await deps.storage.createSignedUrl(String(exportRecord.storage_key), 300) : `/api/v1/exports/${encodeURIComponent(req.params.exportId)}/download`;
+    send(req, res, { url, expiresInSeconds: 300 });
   }));
 
   api.get('/jobs/:jobId', asyncRoute(async (req, res) => {
@@ -101,9 +201,11 @@ export function createApp(deps: ApiDependencies): Express {
     const project = await deps.repository.getProject(req.user!.id, job.projectId);
     if (!project) throw notFound('Project not found.');
     await deps.repository.updateJob(job.id, { state: 'QUEUED', progress: 0, message: 'Retry queued.', errorCode: null });
+    const metadata = job.metadata;
     const payload: QueuePayload = job.kind === 'render'
-      ? { kind: 'render', jobId: job.id, projectId: project.id, userId: req.user!.id, clipId: project.clips[0]?.id ?? '', quality: 'standard', aspectRatio: '9:16' }
-      : { kind: 'analysis', jobId: job.id, projectId: project.id, userId: req.user!.id, sourceUrl: project.sourceUrl, sourceVideoId: project.sourceVideoId, preferredDuration: 45, requestedClipCount: 3 };
+      ? { kind: 'render', jobId: job.id, projectId: project.id, userId: req.user!.id, clipId: typeof metadata.clipId === 'string' ? metadata.clipId : (project.clips[0]?.id ?? ''), quality: metadata.quality === 'draft' || metadata.quality === 'high' || metadata.quality === 'ultra' ? metadata.quality : 'standard', aspectRatio: metadata.aspectRatio === '16:9' || metadata.aspectRatio === '1:1' || metadata.aspectRatio === '4:5' ? metadata.aspectRatio : '9:16' }
+      : { kind: 'analysis', jobId: job.id, projectId: project.id, userId: req.user!.id, sourceUrl: project.sourceUrl, sourceVideoId: project.sourceVideoId, preferredDuration: typeof metadata.preferredDuration === 'number' ? metadata.preferredDuration : 45, requestedClipCount: typeof metadata.requestedClipCount === 'number' ? metadata.requestedClipCount : 3 };
+    if (job.kind === 'analysis') await deps.repository.reserveCredit(req.user!.id, 'analysis-retry', { jobId: job.id });
     await deps.queue.add(job.kind === 'render' ? 'render-retry' : 'analysis-retry', payload, { jobId: `${job.id}-${Date.now()}` });
     send(req, res, { jobId: job.id, status: 'QUEUED' }, 202);
   }));

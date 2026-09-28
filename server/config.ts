@@ -8,6 +8,15 @@ const envSchema = z.object({
   REDIS_URL: z.string().url().default('redis://localhost:6379'),
   STORAGE_DIR: z.string().min(1).default('./.runtime/storage'),
   TEMP_DIR: z.string().min(1).default('./.runtime/tmp'),
+  STORAGE_DRIVER: z.enum(['local', 's3']).default('local'),
+  STORAGE_ENDPOINT: z.string().url().optional(),
+  STORAGE_BUCKET: z.string().min(1).optional(),
+  STORAGE_ACCESS_KEY: z.string().min(1).optional(),
+  STORAGE_SECRET_KEY: z.string().min(1).optional(),
+  STORAGE_REGION: z.string().default('auto'),
+  TEMP_RETENTION_HOURS: z.coerce.number().positive().default(24),
+  SOURCE_RETENTION_DAYS: z.coerce.number().positive().default(30),
+  EXPORT_RETENTION_DAYS: z.coerce.number().positive().default(90),
   CORS_ORIGIN: z.string().default('http://localhost:3000'),
   AUTH_SECRET: z.string().min(32).default('development-only-change-me-please-32-chars'),
   ALLOW_DEV_AUTH: z.enum(['true', 'false']).default('true').transform((v) => v === 'true'),
@@ -33,6 +42,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     if (!result.data.DATABASE_URL) throw new Error('DATABASE_URL is required in production');
     if (result.data.ALLOW_DEV_AUTH) throw new Error('ALLOW_DEV_AUTH must be false in production');
     if (result.data.AUTH_SECRET.includes('development-only')) throw new Error('AUTH_SECRET must be changed in production');
+    if (result.data.STORAGE_DRIVER === 's3' && (!result.data.STORAGE_ENDPOINT || !result.data.STORAGE_BUCKET || !result.data.STORAGE_ACCESS_KEY || !result.data.STORAGE_SECRET_KEY)) throw new Error('S3 storage requires STORAGE_ENDPOINT, STORAGE_BUCKET, STORAGE_ACCESS_KEY, and STORAGE_SECRET_KEY');
   }
 
   return result.data;

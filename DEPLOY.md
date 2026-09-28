@@ -47,7 +47,13 @@ docker compose up --build
 API tersedia di `http://localhost:8080`; frontend di `http://localhost:3000`. Jalankan migration manual jika database sudah pernah dibuat:
 
 ```bash
-docker compose exec api bun run db:migrate
+psql "$DATABASE_URL" -f server/migrations/001_init.sql
+```
+
+Jalankan cleanup secara berkala (disarankan sebagai daily job/cron):
+
+```bash
+bun run cleanup
 ```
 
 Untuk production, gunakan PostgreSQL dan Redis terkelola, object storage S3/R2/GCS melalui adapter, dan deploy `api` serta `worker` sebagai layanan terpisah. Set `NODE_ENV=production`, `ALLOW_DEV_AUTH=false`, `DATABASE_URL`, `REDIS_URL`, `AUTH_SECRET`, dan `GEMINI_API_KEY` hanya di secret manager. Jangan menaruh secrets tersebut pada `VITE_*` atau Firebase Hosting.

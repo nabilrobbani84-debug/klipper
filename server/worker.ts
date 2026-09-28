@@ -12,7 +12,7 @@ import { YtDlpMediaProvider } from './services/youtube.js';
 import { WhisperCliTranscriptionProvider } from './services/transcription.js';
 import { GeminiAIProvider } from './services/ai.js';
 import { FfmpegRenderProvider } from './services/render.js';
-import { LocalObjectStorage } from './services/storage.js';
+import { createObjectStorage } from './services/storage.js';
 import { AppError } from './errors.js';
 import type { AnalysisJobPayload, JobState, QueuePayload, RenderJobPayload } from './types.js';
 
@@ -25,7 +25,7 @@ const media = new YtDlpMediaProvider(config);
 const transcription = new WhisperCliTranscriptionProvider(config);
 const ai = new GeminiAIProvider(config);
 const renderer = new FfmpegRenderProvider(config);
-const storage = new LocalObjectStorage(config);
+const storage = createObjectStorage(config);
 
 async function update(jobId: string, state: JobState, progress: number, message: string) {
   await repository.updateJob(jobId, { state, progress, message });
@@ -37,6 +37,26 @@ async function extractAudio(sourcePath: string, outputPath: string) {
   } catch {
     throw new AppError('AUDIO_EXTRACTION_FAILED', 'Audio extraction failed. Please retry the job.', 422);
   }
+}
+
+async function formatSrtTime(seconds: number): Promise<string> {
+  const safe = Math.max(0, seconds);
+  const hours = Math.floor(safe / 3600).toString().padStart(2, '0');
+  const minutes = Math.floor((safe % 3600) / 60).toString().padStart(2, '0');
+  const secs = Math.floor(safe % 60).toString().padStart(2, '0');
+  const millis = Math.floor((safe % 1) * 1000).toString().padStart(3, '0');
+  return `${hours}:${minutes}:${secs},${millis}`;
+}
+
+async function writeSubtitleFile(project: Awaited<ReturnType<PostgresProjectRepository['getProject']>>, clip: { start: number; end: number }, outputPath: string) {
+  const segments = (project?.transcript?.segments ?? []).filter((segment) => segment.end > clip.start && segment.start < clip.end);
+  const lines: string[] = [];
+  for (const [index, segment] of segments.entries()) {
+    const start = await formatSrtTime(Math.max(0, segment.start - clip.start));
+    const end = await formatSrtTime(Math.min(clip.end - clip.start, segment.end - clip.start));
+    lines.push(`${index + 1}\n${start} --> ${end}\n${segment.text.trim()}\n`);
+  }
+  await fs.writeFile(outputPath, lines.join('\n'), 'utf8');
 }
 
 async function ensureNotCancelled(jobId: string) {
@@ -52,10 +72,15 @@ async function processAnalysis(job: Job<AnalysisJobPayload>) {
     await fs.mkdir(tempDir, { recursive: true });
     await ensureNotCancelled(payload.jobId);
     await update(payload.jobId, 'DOWNLOADING', 10, 'Fetching YouTube metadata and source media.');
-    const metadata = await media.getMetadata(payload.sourceUrl);
+      const metadata = await media.getMetadata(payload.sourceUrl);
+    const entitlements = await repository.getPlanEntitlements(payload.userId);
+    if (metadata.durationSeconds > entitlements.maxVideoDurationSeconds) throw new AppError('VIDEO_DURATION_LIMIT', 'This video exceeds your plan duration limit.', 402);
     await repository.updateProjectMetadata(payload.projectId, metadata);
     await ensureNotCancelled(payload.jobId);
     await media.download(payload.sourceUrl, sourcePath);
+    const sourceKey = `users/${payload.userId}/projects/${payload.projectId}/source/source.mp4`;
+    await storage.put(sourcePath, sourceKey, 'video/mp4');
+    await repository.saveSourceStorage(payload.projectId, sourceKey);
     await update(payload.jobId, 'EXTRACTING_AUDIO', 25, 'Extracting audio for transcription.');
     await extractAudio(sourcePath, audioPath);
     await ensureNotCancelled(payload.jobId);
@@ -68,6 +93,8 @@ async function processAnalysis(job: Job<AnalysisJobPayload>) {
     await ensureNotCancelled(payload.jobId);
     await update(payload.jobId, 'GENERATING_CLIPS', 85, 'Persisting clip candidates.');
     await repository.saveClips(payload.projectId, clips);
+    await update(payload.jobId, 'REFRAMING', 90, 'Preparing a safe-area reframe configuration for each candidate.');
+    await update(payload.jobId, 'GENERATING_CAPTIONS', 96, 'Persisting caption-ready word timestamps.');
     await update(payload.jobId, 'COMPLETED', 100, 'Clip candidates are ready for editing and export.');
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true }).catch((error) => logger.warn({ error, jobId: payload.jobId }, 'temporary cleanup failed'));
@@ -79,6 +106,7 @@ async function processRender(job: Job<RenderJobPayload>) {
   const tempDir = path.resolve(config.TEMP_DIR, payload.jobId);
   const sourcePath = path.join(tempDir, 'source.mp4');
   const outputPath = path.join(tempDir, 'output.mp4');
+  const subtitlePath = path.join(tempDir, 'captions.srt');
   try {
     await fs.mkdir(tempDir, { recursive: true });
     await ensureNotCancelled(payload.jobId);
@@ -89,8 +117,11 @@ async function processRender(job: Job<RenderJobPayload>) {
     await update(payload.jobId, 'DOWNLOADING', 15, 'Preparing source media for rendering.');
     await media.download(project.sourceUrl, sourcePath);
     await ensureNotCancelled(payload.jobId);
+    await update(payload.jobId, 'REFRAMING', 35, 'Applying the configured safe-area crop for the selected aspect ratio.');
+    await update(payload.jobId, 'GENERATING_CAPTIONS', 45, 'Generating synchronized subtitle events from the transcript.');
+    await writeSubtitleFile(project, clip, subtitlePath);
     await update(payload.jobId, 'RENDERING', 55, 'Rendering H.264/AAC output with FFmpeg.');
-    await renderer.renderClip({ sourcePath, outputPath, start: clip.start, duration: clip.duration, aspectRatio: payload.aspectRatio, quality: payload.quality });
+    await renderer.renderClip({ sourcePath, outputPath, subtitlePath, start: clip.start, duration: clip.duration, aspectRatio: payload.aspectRatio, quality: payload.quality });
     await ensureNotCancelled(payload.jobId);
     await update(payload.jobId, 'UPLOADING', 85, 'Storing rendered export.');
     const key = `users/${payload.userId}/projects/${payload.projectId}/exports/${payload.jobId}.mp4`;

@@ -5,12 +5,14 @@ import { PostgresProjectRepository } from './db.js';
 import { createLogger } from './logger.js';
 import { Metrics } from './metrics.js';
 import { createProcessingQueue } from './queue.js';
+import { createObjectStorage } from './services/storage.js';
 
 const config = loadConfig();
 const logger = createLogger(config);
 const repository = new PostgresProjectRepository(config);
 const { queue, connection } = createProcessingQueue(config);
-const app = createApp({ config, repository, queue, metrics: new Metrics(), logger });
+const storage = createObjectStorage(config);
+const app = createApp({ config, repository, queue, metrics: new Metrics(), logger, storage });
 
 const server = app.listen(config.PORT, () => logger.info({ port: config.PORT }, 'ClipForge API listening'));
 

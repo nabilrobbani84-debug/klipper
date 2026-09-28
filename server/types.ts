@@ -65,6 +65,27 @@ export interface ClipCandidate {
   hook: string;
   reason: string;
   transcript: string;
+  captions?: CaptionSettings;
+  reframing?: ReframingSettings;
+}
+
+export interface CaptionSettings {
+  preset: 'podcast' | 'bold' | 'minimal' | 'karaoke' | 'motivation' | 'gaming' | 'education';
+  fontFamily: string;
+  fontSize: number;
+  textColor: string;
+  highlightColor: string;
+  outlineColor: string;
+  position: 'top' | 'center' | 'bottom';
+  maxWordsPerLine: number;
+  activeWord: boolean;
+}
+
+export interface ReframingSettings {
+  mode: 'center' | 'face' | 'active-speaker' | 'left' | 'right' | 'custom';
+  x: number;
+  y: number;
+  zoom: number;
 }
 
 export interface ExportRecord {
@@ -100,6 +121,7 @@ export interface JobRecord {
   progress: number;
   message: string;
   errorCode: string | null;
+  metadata: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }

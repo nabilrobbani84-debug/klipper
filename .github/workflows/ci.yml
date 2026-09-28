@@ -20,5 +20,9 @@ jobs:
         run: bun run lint
       - name: Build frontend
         run: bun run build
+      - name: Run tests
+        run: bun run test
+      - name: Build Docker image
+        run: docker build --target runtime -t clipforge:ci .
       - name: Dependency audit
         run: bun audit --audit-level high

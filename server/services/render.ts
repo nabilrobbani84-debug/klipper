@@ -6,7 +6,7 @@ import { AppError } from '../errors.js';
 const execFileAsync = promisify(execFile);
 
 export interface RenderProvider {
-  renderClip(input: { sourcePath: string; outputPath: string; start: number; duration: number; aspectRatio: '9:16' | '16:9' | '1:1' | '4:5'; quality: 'draft' | 'standard' | 'high' | 'ultra' }): Promise<void>;
+  renderClip(input: { sourcePath: string; outputPath: string; start: number; duration: number; aspectRatio: '9:16' | '16:9' | '1:1' | '4:5'; quality: 'draft' | 'standard' | 'high' | 'ultra'; subtitlePath?: string }): Promise<void>;
 }
 
 const dimensions: Record<string, [number, number]> = { '9:16': [1080, 1920], '16:9': [1920, 1080], '1:1': [1080, 1080], '4:5': [1080, 1350] };
@@ -18,9 +18,11 @@ export class FfmpegRenderProvider implements RenderProvider {
   async renderClip(input: Parameters<RenderProvider['renderClip']>[0]) {
     const [width, height] = dimensions[input.aspectRatio];
     try {
+      const filters = [`scale=${width}:${height}:force_original_aspect_ratio=increase`, `crop=${width}:${height}`, 'fps=30'];
+      if (input.subtitlePath) filters.push(`subtitles=${input.subtitlePath.replace(/:/g, '\\:')}:force_style='FontName=Arial,FontSize=18,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=2,Shadow=1,Alignment=2'`);
       await execFileAsync(this.config.FFMPEG_BIN, [
         '-y', '-ss', input.start.toFixed(3), '-i', input.sourcePath, '-t', input.duration.toFixed(3),
-        '-vf', `scale=${width}:${height}:force_original_aspect_ratio=increase,crop=${width}:${height},fps=30`,
+        '-vf', filters.join(','),
         '-c:v', 'libx264', '-preset', 'medium', '-crf', String(crf[input.quality]), '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart', input.outputPath,
       ], { timeout: 20 * 60_000, maxBuffer: 4 * 1024 * 1024 });
     } catch {

@@ -32,7 +32,15 @@ export class GeminiAIProvider implements AIProvider {
       return parsed.slice(0, input.requestedClipCount).map((candidate) => {
         const start = Math.max(0, candidate.start);
         const end = Math.max(start + 1, candidate.end);
-        return { ...candidate, id: `clip-${crypto.randomUUID()}`, start, end, duration: end - start };
+        return {
+          ...candidate,
+          id: `clip-${crypto.randomUUID()}`,
+          start,
+          end,
+          duration: end - start,
+          captions: { preset: 'podcast', fontFamily: 'Arial', fontSize: 18, textColor: '#FFFFFF', highlightColor: '#FACC15', outlineColor: '#000000', position: 'bottom', maxWordsPerLine: 5, activeWord: true },
+          reframing: { mode: 'center', x: 50, y: 50, zoom: 1 },
+        };
       });
     } catch (error) {
       if (error instanceof AppError) throw error;

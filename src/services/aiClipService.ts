@@ -26,9 +26,15 @@ export interface AnalysisProgressCallback {
 }
 
 export const PROCESSING_STEPS = [
-  'Fetching video information', 'Extracting transcript & audio stream', 'Analyzing speech patterns & cadence',
-  'Detecting important moments & high energy', 'Detecting emotional peaks & controversy', 'Finding potential hooks & curiosity gaps',
-  'Generating ranked clip candidates', 'Applying AI smart reframing & auto-cuts', 'Preparing multi-track timeline preview',
+  'Queued for processing',
+  'Downloading video',
+  'Extracting audio',
+  'Generating transcript',
+  'Finding highlights',
+  'Creating clips',
+  'Auto reframe configuration',
+  'Adding synchronized captions',
+  'Rendering output',
 ];
 
 export async function analyzeVideoWithAI(
