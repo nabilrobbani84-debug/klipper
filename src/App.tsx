@@ -29,6 +29,14 @@ import {
 
 import { SAMPLE_VIDEOS, generateSampleClips } from './data/sampleVideos';
 import { fetchVideoMetadata, analyzeVideoWithAI } from './services/aiClipService';
+import {
+  cancelBackendJob,
+  createAnalysisJob,
+  getBackendProject,
+  isBackendConfigured,
+  mapBackendProject,
+  watchBackendJob,
+} from './services/apiClient';
 
 export default function App() {
   // Navigation State
@@ -86,6 +94,7 @@ export default function App() {
   const [processingStepIndex, setProcessingStepIndex] = useState(0);
   const [processingProgress, setProcessingProgress] = useState(0);
   const [processingLog, setProcessingLog] = useState('');
+  const [processingJobId, setProcessingJobId] = useState<string | null>(null);
 
   // Viral AI Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
@@ -130,6 +139,53 @@ export default function App() {
     setProcessingLog('Parsing URL and verifying access rights...');
 
     try {
+      if (isBackendConfigured()) {
+        const queued = await createAnalysisJob({
+          youtubeUrl: url,
+          contentGoal,
+          hookType,
+          preferredDuration,
+          aspectRatio,
+          requestedClipCount: 3,
+        });
+        setProcessingJobId(queued.jobId);
+        setProcessingLog('Job queued. The worker will continue even if this browser tab is closed.');
+        const finished = await watchBackendJob(queued.jobId, (job) => {
+          const stageIndex: Record<string, number> = {
+            QUEUED: 0,
+            DOWNLOADING: 1,
+            EXTRACTING_AUDIO: 2,
+            TRANSCRIBING: 3,
+            ANALYZING: 4,
+            GENERATING_CLIPS: 5,
+            REFRAMING: 6,
+            GENERATING_CAPTIONS: 7,
+            RENDERING: 8,
+            COMPLETED: 8,
+          };
+          setProcessingStepIndex(stageIndex[job.state] ?? 0);
+          setProcessingProgress(job.progress);
+          setProcessingLog(job.message);
+        });
+        if (finished.state !== 'COMPLETED') {
+          throw new Error(finished.message || 'Video processing did not complete.');
+        }
+        const backendProject = await getBackendProject(queued.projectId);
+        const newProject = mapBackendProject(backendProject);
+        if (newProject.clips.length === 0) throw new Error('The analysis completed without returning clip candidates.');
+        setProcessingVideoInfo(newProject.videoInfo);
+        setProjects((prev) => [newProject, ...prev]);
+        setActiveProjectId(newProject.id);
+        setActiveClipId(newProject.clips[0].id);
+        setUser((prev) => ({
+          ...prev,
+          minutesUsed: Math.min(prev.minutesLimit, prev.minutesUsed + Math.round(newProject.videoInfo.durationSeconds / 60)),
+          clipsGenerated: prev.clipsGenerated + newProject.clips.length,
+        }));
+        setCurrentTab('clips');
+        return;
+      }
+
       const videoInfo = await fetchVideoMetadata(url);
       setProcessingVideoInfo(videoInfo);
 
@@ -175,8 +231,20 @@ export default function App() {
       alert(err.message || 'An error occurred while analyzing the YouTube video.');
     } finally {
       setIsProcessing(false);
+      setProcessingJobId(null);
       setProcessingVideoInfo(null);
     }
+  };
+
+  const handleCancelProcessing = async () => {
+    if (processingJobId) {
+      try {
+        await cancelBackendJob(processingJobId);
+      } catch (error) {
+        alert(error instanceof Error ? error.message : 'The processing job could not be cancelled.');
+      }
+    }
+    setIsProcessing(false);
   };
 
   // Handler: Quick Sample Select
@@ -374,7 +442,7 @@ export default function App() {
           currentStepIndex={processingStepIndex}
           progressPercent={processingProgress}
           currentLog={processingLog}
-          onCancel={() => setIsProcessing(false)}
+          onCancel={handleCancelProcessing}
         />
       )}
 
