@@ -2,6 +2,7 @@ import express from 'express';
 import { createServer as createViteServer } from 'vite';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 
@@ -28,6 +29,14 @@ async function startServer() {
 
   app.use(express.json());
 
+  // Request ID Middleware
+  app.use((req, res, next) => {
+    const rawId = req.headers['x-request-id'] as string;
+    (req as any).id = rawId && /^[a-zA-Z0-9_-]{1,64}$/.test(rawId) ? rawId : `req_${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
+    res.setHeader('X-Request-Id', (req as any).id);
+    next();
+  });
+
   // Instantiate Core Services
   const queue = JobQueue.getInstance();
   const storage = ObjectStorageEngine.getInstance();
@@ -53,14 +62,10 @@ async function startServer() {
     res.setHeader('X-RateLimit-Reset', rateCheck.resetSeconds.toString());
 
     if (!rateCheck.allowed) {
-      return res.status(429).json({
-        error: {
-          code: 'RATE_LIMITED',
-          message: 'Rate limit exceeded. Please wait a moment before sending more requests.',
-          retryAfterSeconds: rateCheck.resetSeconds,
-          timestamp: new Date().toISOString(),
-        },
-      });
+      return res.status(429).json(formatErrorResponse(
+        new AppError('RATE_LIMITED', 'Rate limit exceeded. Please wait a moment before sending more requests.', 429),
+        (req as any).id
+      ));
     }
 
     next();
@@ -92,7 +97,7 @@ async function startServer() {
 
   app.get('/version', (_req, res) => {
     res.json({
-      name: 'ClipForge AI Enterprise',
+      name: 'Klipper — AI YouTube Video Clipper',
       version: '2.4.0-production',
       nodeVersion: process.version,
       platform: process.platform,
@@ -121,7 +126,7 @@ async function startServer() {
       const result = auth.register(name, email, password);
       res.json(result);
     } catch (err) {
-      res.status(400).json(formatErrorResponse(err));
+      res.status(400).json(formatErrorResponse(err, (req as any).id));
     }
   });
 
@@ -131,7 +136,7 @@ async function startServer() {
       const result = auth.login(email || 'creator@clipforge.ai', password);
       res.json(result);
     } catch (err) {
-      res.status(401).json(formatErrorResponse(err));
+      res.status(401).json(formatErrorResponse(err, (req as any).id));
     }
   });
 
@@ -141,7 +146,7 @@ async function startServer() {
       const result = auth.googleLogin(name, email);
       res.json(result);
     } catch (err) {
-      res.status(500).json(formatErrorResponse(err));
+      res.status(500).json(formatErrorResponse(err, (req as any).id));
     }
   });
 
@@ -170,7 +175,7 @@ async function startServer() {
     });
   });
 
-  // Projects CRUD Endpoints
+  // Projects CRUD Endpoints (Strict Multi-Tenant Isolation)
   app.get('/api/projects', (req, res) => {
     const user = (req as any).user;
     const userProjects = db.findProjectsByUserId(user.id);
@@ -178,9 +183,14 @@ async function startServer() {
   });
 
   app.get('/api/projects/:id', (req, res) => {
+    const user = (req as any).user;
     const project = db.findProjectById(req.params.id);
     if (!project) {
-      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Project not found', 404)));
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Project not found', 404), (req as any).id));
+    }
+    // Authorization Check: user can only access their own projects unless ADMIN
+    if (project.userId !== user.id && user.role !== 'ADMIN') {
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to this project', 403), (req as any).id));
     }
     const clips = db.findClipsByProjectId(project.id);
     res.json({ project, clips });
@@ -190,14 +200,34 @@ async function startServer() {
     const user = (req as any).user;
     const project = db.findProjectById(req.params.id);
     if (!project) {
-      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Project not found', 404)));
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Project not found', 404), (req as any).id));
     }
     // Authorization check
     if (project.userId !== user.id && user.role !== 'ADMIN') {
-      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to this project', 403)));
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to this project', 403), (req as any).id));
     }
     db.deleteProject(req.params.id);
     res.json({ success: true, message: 'Project and all clips deleted' });
+  });
+
+  // Exports Endpoints (Strict Multi-Tenant Isolation)
+  app.get('/api/exports', (req, res) => {
+    const user = (req as any).user;
+    const userExports = db.findExportsByUserId(user.id);
+    res.json({ success: true, exports: userExports });
+  });
+
+  app.delete('/api/exports/:id', (req, res) => {
+    const user = (req as any).user;
+    const exportRecord = db.exports.get(req.params.id);
+    if (!exportRecord) {
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Export record not found', 404), (req as any).id));
+    }
+    if (exportRecord.userId !== user.id && user.role !== 'ADMIN') {
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to delete this export', 403), (req as any).id));
+    }
+    db.deleteExport(req.params.id);
+    res.json({ success: true, message: 'Export deleted' });
   });
 
   // Create Video Processing Pipeline Job (with SSRF protection & credit deduction)
@@ -240,15 +270,20 @@ async function startServer() {
       });
     } catch (err: any) {
       Logger.error(`Job creation failed: ${err.message}`);
-      res.status(err.statusCode || 500).json(formatErrorResponse(err));
+      res.status(err.statusCode || 500).json(formatErrorResponse(err, (req as any).id));
     }
   });
 
   // Real-Time Server-Sent Events (SSE) Stream for Job Status
   app.get('/api/jobs/:id/events', (req, res) => {
+    const user = (req as any).user;
     const job = queue.getJob(req.params.id);
     if (!job) {
-      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404)));
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404), (req as any).id));
+    }
+    // Authorization Check: user can only stream their own jobs unless ADMIN
+    if (job.userId !== user.id && user.role !== 'ADMIN') {
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to this job stream', 403), (req as any).id));
     }
 
     res.setHeader('Content-Type', 'text/event-stream');
@@ -259,29 +294,36 @@ async function startServer() {
     queue.registerSSEClient(req.params.id, res);
   });
 
-  // Get All Queue Jobs
-  app.get('/api/jobs', (_req, res) => {
-    res.json({ jobs: queue.getAllJobs() });
+  // Get All Queue Jobs (Filtered by user unless ADMIN)
+  app.get('/api/jobs', (req, res) => {
+    const user = (req as any).user;
+    const allJobs = queue.getAllJobs();
+    const userJobs = user.role === 'ADMIN' ? allJobs : allJobs.filter(j => j.userId === user.id);
+    res.json({ jobs: userJobs });
   });
 
-  // Get Single Job Status & Logs
+  // Get Single Job Status & Logs (With Authorization)
   app.get('/api/jobs/:id', (req, res) => {
+    const user = (req as any).user;
     const job = queue.getJob(req.params.id);
     if (!job) {
-      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404)));
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404), (req as any).id));
+    }
+    if (job.userId !== user.id && user.role !== 'ADMIN') {
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to this job', 403), (req as any).id));
     }
     res.json({ job });
   });
 
-  // Cancel Job
+  // Cancel Job (With Authorization)
   app.post('/api/jobs/:id/cancel', (req, res) => {
     const user = (req as any).user;
     const job = queue.getJob(req.params.id);
     if (!job) {
-      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404)));
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404), (req as any).id));
     }
     if (job.userId !== user.id && user.role !== 'ADMIN') {
-      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to cancel this job', 403)));
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to cancel this job', 403), (req as any).id));
     }
 
     const success = queue.cancelJob(req.params.id);
@@ -296,6 +338,14 @@ async function startServer() {
 
       if (!clip) {
         throw new AppError('RENDER_FAILED', 'Clip details required for render job', 400);
+      }
+
+      // Authorization check: if clip is associated with an existing project, verify user owns it
+      if (clip.projectId) {
+        const parentProject = db.findProjectById(clip.projectId);
+        if (parentProject && parentProject.userId !== user.id && user.role !== 'ADMIN') {
+          throw new AppError('FORBIDDEN', 'Access denied: You do not own this clip', 403);
+        }
       }
 
       // Feature Gating: 4K rendering requires 'pro' or 'business' plan
@@ -331,7 +381,7 @@ async function startServer() {
         message: 'FFmpeg render job queued',
       });
     } catch (err: any) {
-      res.status(err.statusCode || 500).json(formatErrorResponse(err));
+      res.status(err.statusCode || 500).json(formatErrorResponse(err, (req as any).id));
     }
   });
 
@@ -372,7 +422,7 @@ async function startServer() {
       });
     } catch (err: any) {
       Logger.error(`Synchronous clip analysis error: ${err.message}`);
-      res.status(err.statusCode || 500).json(formatErrorResponse(err));
+      res.status(err.statusCode || 500).json(formatErrorResponse(err, (req as any).id));
     }
   });
 
@@ -381,7 +431,7 @@ async function startServer() {
     const { path: relPath, expires, token } = req.query;
 
     if (!relPath || !expires || !token) {
-      return res.status(400).json(formatErrorResponse(new AppError('STORAGE_FAILED', 'Missing signed URL parameters', 400)));
+      return res.status(400).json(formatErrorResponse(new AppError('STORAGE_FAILED', 'Missing signed URL parameters', 400), (req as any).id));
     }
 
     const isValid = storage.verifySignedUrl(
@@ -391,12 +441,12 @@ async function startServer() {
     );
 
     if (!isValid) {
-      return res.status(403).json(formatErrorResponse(new AppError('UNAUTHORIZED', 'Signature invalid or download URL expired', 403)));
+      return res.status(403).json(formatErrorResponse(new AppError('UNAUTHORIZED', 'Signature invalid or download URL expired', 403), (req as any).id));
     }
 
     const absPath = storage.getFilePath(String(relPath));
     if (!fs.existsSync(absPath)) {
-      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'File not found or expired from storage', 404)));
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'File not found or expired from storage', 404), (req as any).id));
     }
 
     const filename = path.basename(absPath);

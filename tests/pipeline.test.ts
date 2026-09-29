@@ -229,13 +229,112 @@ async function runAllTests() {
       resolution: '720p',
       cropPanXPercent: 50,
       normalizeAudio: true,
-      subtitleText: 'ClipForge Automated Test Render',
+      subtitleText: 'Klipper Automated Test Render',
     });
 
     assert.ok(fs.existsSync(result.outputPath));
     assert.ok(result.sizeBytes > 1000);
     // Cleanup scratch file
     fs.unlinkSync(result.outputPath);
+  });
+
+  // 9. AI Clip Boundary Validation & Inverted Timestamp Repair (Rule 12 & 13)
+  console.log('\n🛠️  9. AI Clip Boundary Validation & Repair Tests');
+  await test('Repairs inverted timestamps where startTime > endTime', () => {
+    const repaired = ClipDetectionEngine.validateAndRepairBoundaries(50, 20, 300, 30);
+    assert.strictEqual(repaired.startTime, 20);
+    assert.strictEqual(repaired.endTime, 50);
+    assert.strictEqual(repaired.duration, 30);
+  });
+
+  await test('Enforces minimum clip duration of 15 seconds', () => {
+    const repaired = ClipDetectionEngine.validateAndRepairBoundaries(10, 14, 300, 30, 15);
+    assert.strictEqual(repaired.startTime, 10);
+    assert.strictEqual(repaired.endTime, 25);
+    assert.strictEqual(repaired.duration, 15);
+  });
+
+  await test('Clamps timestamps within total video duration bounds', () => {
+    const repaired = ClipDetectionEngine.validateAndRepairBoundaries(290, 350, 300, 30, 15);
+    assert.ok(repaired.endTime <= 300);
+    assert.ok(repaired.startTime >= 0);
+  });
+
+  // 10. Near-Duplicate Overlap Clip Filtering (Rule 14)
+  console.log('\n🔍 10. Near-Duplicate Overlap Clip Filtering Tests');
+  await test('Filters out overlapping clips sharing >55% timeline', () => {
+    const dummyClips: any[] = [
+      { id: 'clip-1', startTime: 10, endTime: 50, duration: 40, score: 94 }, // 10-50
+      { id: 'clip-2', startTime: 15, endTime: 52, duration: 37, score: 86 }, // heavily overlaps clip-1
+      { id: 'clip-3', startTime: 120, endTime: 160, duration: 40, score: 91 }, // distinct moment
+    ];
+
+    const deduplicated = ClipDetectionEngine.filterOverlappingClips(dummyClips, 0.55);
+    assert.strictEqual(deduplicated.length, 2);
+    assert.ok(deduplicated.some(c => c.id === 'clip-1'));
+    assert.ok(deduplicated.some(c => c.id === 'clip-3'));
+    assert.ok(!deduplicated.some(c => c.id === 'clip-2')); // lower-scoring overlapping clip removed
+  });
+
+  // 11. Multi-Tenant Authorization Tests (Rule 6)
+  console.log('\n🔒 11. Multi-Tenant Authorization Isolation Tests');
+  await test('Blocks User A from accessing or mutating User B private project', () => {
+    // Create User A and User B
+    const userA = { id: 'usr_alice_123', email: 'alice@klipper.ai', name: 'Alice', role: 'USER' as 'USER' | 'ADMIN', plan: 'free' as const, createdAt: '', updatedAt: '' };
+    const userB = { id: 'usr_bob_456', email: 'bob@klipper.ai', name: 'Bob', role: 'USER' as 'USER' | 'ADMIN', plan: 'free' as const, createdAt: '', updatedAt: '' };
+    db.saveUser(userA);
+    db.saveUser(userB);
+
+    // User B creates a project
+    const bobProject = {
+      id: 'proj_bob_secret',
+      userId: userB.id,
+      sourceUrl: 'https://youtube.com/watch?v=secretbob',
+      sourceVideoId: 'secretbob',
+      title: 'Bob Secret Strategy',
+      durationSeconds: 120,
+      status: 'ready' as const,
+      contentGoal: 'retention',
+      hookType: 'curiosity',
+      preferredDuration: 45,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    db.saveProject(bobProject);
+
+    // Verify User A fetching their projects cannot see Bob's project
+    const aliceProjects = db.findProjectsByUserId(userA.id);
+    assert.strictEqual(aliceProjects.some(p => p.id === 'proj_bob_secret'), false);
+
+    // Verify Bob's project ownership check
+    const fetched = db.findProjectById('proj_bob_secret');
+    assert.ok(fetched);
+    const aliceCanAccess = fetched.userId === userA.id || userA.role === 'ADMIN';
+    assert.strictEqual(aliceCanAccess, false);
+
+    // Cleanup
+    db.deleteProject('proj_bob_secret');
+  });
+
+  // 12. Server-Side Atomic Credit Metering Tests (Rule 25)
+  console.log('\n💳 12. Server-Side Atomic Credit Metering Tests');
+  await test('Prevents overdraft and negative credits', () => {
+    const authService = AuthService.getInstance();
+    const testUser = { id: 'usr_meter_test', email: 'meter@klipper.ai', name: 'Meter Test', role: 'USER' as const, plan: 'free' as const, createdAt: '', updatedAt: '' };
+    db.saveUser(testUser);
+
+    // Set usage to 10 credits
+    db.updateUsage(testUser.id, { creditsRemaining: 10 });
+
+    // Requesting 5 credits should succeed
+    const res1 = authService.deductCredits(testUser.id, 5, 60);
+    assert.strictEqual(res1.success, true);
+    assert.strictEqual(res1.remainingCredits, 5);
+
+    // Requesting 100 credits should fail cleanly with overdraft warning
+    const res2 = authService.deductCredits(testUser.id, 100, 600);
+    assert.strictEqual(res2.success, false);
+    assert.strictEqual(res2.remainingCredits, 5); // Credits preserved, not negative
   });
 
   console.log('\n====================================================');

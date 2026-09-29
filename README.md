@@ -1,6 +1,8 @@
-# ClipForge AI — Enterprise YouTube Video Clipper & AI Viral Studio
+# Klipper — AI YouTube Video Clipper
 
-ClipForge AI transforms long-form YouTube videos and podcasts into high-retention vertical short clips (TikTok, Instagram Reels, YouTube Shorts) utilizing server-side FFmpeg rendering, multilingual Whisper transcription, 7-factor weighted viral moment scoring, and smart speaker reframe tracking.
+Repository: [https://github.com/nabilrobbani84-debug/klipper](https://github.com/nabilrobbani84-debug/klipper)
+
+**Klipper** transforms long-form YouTube videos and podcasts into high-retention vertical short clips (TikTok, Instagram Reels, YouTube Shorts) utilizing server-side FFmpeg rendering, multilingual Whisper transcription, 7-factor weighted viral moment scoring, and smart speaker reframe tracking.
 
 ---
 

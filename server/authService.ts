@@ -125,14 +125,15 @@ export class AuthService {
       };
     }
 
+    const newRemaining = usage.creditsRemaining - credits;
     db.updateUsage(userId, {
-      creditsRemaining: usage.creditsRemaining - credits,
+      creditsRemaining: newRemaining,
       processingSeconds: usage.processingSeconds + processingSeconds,
     });
 
     return {
       success: true,
-      remainingCredits: usage.creditsRemaining - credits,
+      remainingCredits: newRemaining,
     };
   }
 

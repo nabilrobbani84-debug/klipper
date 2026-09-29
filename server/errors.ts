@@ -28,23 +28,25 @@ export class AppError extends Error {
   }
 }
 
-export function formatErrorResponse(err: any) {
+export function formatErrorResponse(err: any, requestId?: string) {
+  const reqId = requestId || `req_${Date.now()}`;
   if (err instanceof AppError) {
     return {
+      success: false,
       error: {
         code: err.code,
         message: err.message,
-        details: err.details,
-        timestamp: new Date().toISOString(),
+        requestId: reqId,
       },
     };
   }
 
   return {
+    success: false,
     error: {
       code: 'INTERNAL_ERROR',
       message: err?.message || 'An unexpected error occurred',
-      timestamp: new Date().toISOString(),
+      requestId: reqId,
     },
   };
 }

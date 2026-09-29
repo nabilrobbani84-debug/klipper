@@ -50,13 +50,13 @@ export const Navbar: React.FC<NavbarProps> = ({
           <div>
             <div className="flex items-center gap-1.5">
               <span className="font-extrabold text-lg tracking-tight bg-gradient-to-r from-white via-slate-100 to-purple-200 bg-clip-text text-transparent">
-                ClipForge
+                Klipper
               </span>
               <span className="text-[10px] uppercase font-bold tracking-wider px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
                 AI
               </span>
             </div>
-            <p className="text-[10px] text-slate-400 hidden sm:block">AI YouTube Clipper</p>
+            <p className="text-[10px] text-slate-400 hidden sm:block">AI YouTube Video Clipper</p>
           </div>
         </div>
 

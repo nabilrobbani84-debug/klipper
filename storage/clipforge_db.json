@@ -19,6 +19,33 @@
       "plan": "creator",
       "createdAt": "2026-09-29T06:22:13.396Z",
       "updatedAt": "2026-09-29T06:22:13.397Z"
+    },
+    "usr_alice_123": {
+      "id": "usr_alice_123",
+      "email": "alice@klipper.ai",
+      "name": "Alice",
+      "role": "USER",
+      "plan": "free",
+      "createdAt": "",
+      "updatedAt": ""
+    },
+    "usr_bob_456": {
+      "id": "usr_bob_456",
+      "email": "bob@klipper.ai",
+      "name": "Bob",
+      "role": "USER",
+      "plan": "free",
+      "createdAt": "",
+      "updatedAt": ""
+    },
+    "usr_meter_test": {
+      "id": "usr_meter_test",
+      "email": "meter@klipper.ai",
+      "name": "Meter Test",
+      "role": "USER",
+      "plan": "free",
+      "createdAt": "",
+      "updatedAt": ""
     }
   },
   "projects": {
@@ -6682,9 +6709,9 @@
       "type": "ANALYZE_VIDEO",
       "targetResolution": "1080p",
       "targetAspectRatio": "9:16",
-      "status": "pending",
-      "currentStage": "QUEUED",
-      "progress": 0,
+      "status": "processing",
+      "currentStage": "ANALYZE",
+      "progress": 55,
       "attempts": 1,
       "maxAttempts": 3,
       "logs": [
@@ -6693,9 +6720,118 @@
           "stage": "QUEUED",
           "message": "Job job_1790665675902_10f018fd initialized in worker pipeline",
           "level": "info"
+        },
+        {
+          "timestamp": "7:08:06 AM",
+          "stage": "DOWNLOAD_VIDEO",
+          "message": "Resolving YouTube stream manifest and metadata...",
+          "level": "info"
+        },
+        {
+          "timestamp": "7:08:07 AM",
+          "stage": "TRANSCRIBE",
+          "message": "Transcribing speech audio with neural multilingual ASR...",
+          "level": "info"
+        },
+        {
+          "timestamp": "7:08:07 AM",
+          "stage": "TRANSCRIBE",
+          "message": "Generated 7 sentence segments with word-level timestamps (EN)",
+          "level": "info"
+        },
+        {
+          "timestamp": "7:08:07 AM",
+          "stage": "ANALYZE",
+          "message": "Running 7-factor weighted scoring: Hook(25%), Info(20%), Emotion(15%)...",
+          "level": "info"
         }
       ],
+      "startedAt": "2026-09-29T07:08:06.565Z",
       "createdAt": "2026-09-29T07:07:55.914Z"
+    },
+    "job_1790668271090_b86f19a4": {
+      "id": "job_1790668271090_b86f19a4",
+      "userId": "usr_default",
+      "type": "ANALYZE_VIDEO",
+      "targetResolution": "1080p",
+      "targetAspectRatio": "9:16",
+      "status": "pending",
+      "currentStage": "QUEUED",
+      "progress": 0,
+      "attempts": 1,
+      "maxAttempts": 3,
+      "logs": [
+        {
+          "timestamp": "7:51:11 AM",
+          "stage": "QUEUED",
+          "message": "Job job_1790668271090_b86f19a4 initialized in worker pipeline",
+          "level": "info"
+        }
+      ],
+      "createdAt": "2026-09-29T07:51:11.101Z"
+    },
+    "job_1790668425490_11be761c": {
+      "id": "job_1790668425490_11be761c",
+      "userId": "usr_default",
+      "type": "ANALYZE_VIDEO",
+      "targetResolution": "1080p",
+      "targetAspectRatio": "9:16",
+      "status": "pending",
+      "currentStage": "QUEUED",
+      "progress": 0,
+      "attempts": 1,
+      "maxAttempts": 3,
+      "logs": [
+        {
+          "timestamp": "7:53:45 AM",
+          "stage": "QUEUED",
+          "message": "Job job_1790668425490_11be761c initialized in worker pipeline",
+          "level": "info"
+        }
+      ],
+      "createdAt": "2026-09-29T07:53:45.501Z"
+    },
+    "job_1790668458685_eba1a7d8": {
+      "id": "job_1790668458685_eba1a7d8",
+      "userId": "usr_default",
+      "type": "ANALYZE_VIDEO",
+      "targetResolution": "1080p",
+      "targetAspectRatio": "9:16",
+      "status": "pending",
+      "currentStage": "QUEUED",
+      "progress": 0,
+      "attempts": 1,
+      "maxAttempts": 3,
+      "logs": [
+        {
+          "timestamp": "7:54:18 AM",
+          "stage": "QUEUED",
+          "message": "Job job_1790668458685_eba1a7d8 initialized in worker pipeline",
+          "level": "info"
+        }
+      ],
+      "createdAt": "2026-09-29T07:54:18.697Z"
+    },
+    "job_1790668660094_33139959": {
+      "id": "job_1790668660094_33139959",
+      "userId": "usr_default",
+      "type": "ANALYZE_VIDEO",
+      "targetResolution": "1080p",
+      "targetAspectRatio": "9:16",
+      "status": "pending",
+      "currentStage": "QUEUED",
+      "progress": 0,
+      "attempts": 1,
+      "maxAttempts": 3,
+      "logs": [
+        {
+          "timestamp": "7:57:40 AM",
+          "stage": "QUEUED",
+          "message": "Job job_1790668660094_33139959 initialized in worker pipeline",
+          "level": "info"
+        }
+      ],
+      "createdAt": "2026-09-29T07:57:40.106Z"
     }
   },
   "exports": {},
@@ -6710,6 +6846,17 @@
       "creditsRemaining": 120,
       "period": "2026-09",
       "updatedAt": "2026-09-29T06:22:13.397Z"
+    },
+    "usr_meter_test": {
+      "id": "usage_usr_meter_test",
+      "userId": "usr_meter_test",
+      "processingSeconds": 180,
+      "renderingSeconds": 0,
+      "aiTokens": 0,
+      "storageBytes": 0,
+      "creditsRemaining": 5,
+      "period": "2026-09",
+      "updatedAt": "2026-09-29T07:57:40.699Z"
     }
   },
   "subscriptions": {

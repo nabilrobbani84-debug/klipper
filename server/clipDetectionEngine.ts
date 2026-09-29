@@ -12,6 +12,90 @@ import { DEFAULT_CAPTIONS, DEFAULT_REFRAMING, DEFAULT_AUDIO } from '../src/data/
 
 export class ClipDetectionEngine {
   /**
+   * Enforces 0 <= startTime < endTime <= videoDuration, minimum context window (>=15s),
+   * repairs inverted or negative duration timestamps.
+   */
+  public static validateAndRepairBoundaries(
+    startTime: number,
+    endTime: number,
+    videoDuration: number,
+    preferredDuration: number = 45,
+    minDuration: number = 15,
+    maxDuration: number = 60
+  ): { startTime: number; endTime: number; duration: number } {
+    const totalDuration = Math.max(minDuration, videoDuration);
+
+    let start = Number(startTime);
+    let end = Number(endTime);
+
+    // If NaN or undefined, create safe default
+    if (isNaN(start)) start = 0;
+    if (isNaN(end)) end = start + preferredDuration;
+
+    // Fix inverted timestamps (startTime > endTime)
+    if (start > end) {
+      const temp = start;
+      start = end;
+      end = temp;
+    }
+
+    // Clamp within video bounds
+    start = Math.max(0, Math.min(start, totalDuration - minDuration));
+    end = Math.min(totalDuration, Math.max(end, start + minDuration));
+
+    // Enforce min & max duration
+    let duration = end - start;
+    if (duration < minDuration) {
+      end = Math.min(totalDuration, start + minDuration);
+      duration = end - start;
+      if (duration < minDuration) {
+        start = Math.max(0, end - minDuration);
+        duration = end - start;
+      }
+    } else if (duration > maxDuration) {
+      end = start + maxDuration;
+      duration = maxDuration;
+    }
+
+    return {
+      startTime: Math.round(start * 10) / 10,
+      endTime: Math.round(end * 10) / 10,
+      duration: Math.round(duration * 10) / 10,
+    };
+  }
+
+  /**
+   * Filters out near-duplicate overlapping clips (Rule 14)
+   * If two clips overlap by more than 55%, retains the higher-scoring clip.
+   */
+  public static filterOverlappingClips(clips: ClipCandidate[], maxOverlapRatio = 0.55): ClipCandidate[] {
+    const sorted = [...clips].sort((a, b) => b.score - a.score);
+    const selected: ClipCandidate[] = [];
+
+    for (const candidate of sorted) {
+      let isDuplicate = false;
+      for (const existing of selected) {
+        const overlapStart = Math.max(candidate.startTime, existing.startTime);
+        const overlapEnd = Math.min(candidate.endTime, existing.endTime);
+        const overlapDuration = Math.max(0, overlapEnd - overlapStart);
+        const minClipDuration = Math.min(candidate.duration, existing.duration);
+
+        if (minClipDuration > 0 && (overlapDuration / minClipDuration) > maxOverlapRatio) {
+          isDuplicate = true;
+          break;
+        }
+      }
+
+      if (!isDuplicate) {
+        selected.push(candidate);
+      }
+    }
+
+    // Return in order of score
+    return selected.sort((a, b) => b.score - a.score);
+  }
+
+  /**
    * Calculates weighted virality score based on 7 essential factors
    */
   public static calculateWeightedScore(breakdown: Omit<ScoringBreakdown, 'totalScore' | 'retentionCurve'>): ScoringBreakdown {
@@ -119,7 +203,7 @@ Output ONLY raw valid JSON array.`;
         const parsed = JSON.parse(cleanJson);
 
         if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map((item, idx) => {
+          const rawClips: ClipCandidate[] = parsed.map((item, idx) => {
             const scoring = this.calculateWeightedScore({
               hook: item.scoring?.hook || 95 - idx * 3,
               informationValue: item.scoring?.informationValue || 92 - idx * 2,
@@ -130,14 +214,22 @@ Output ONLY raw valid JSON array.`;
               context: item.scoring?.context || 90 - idx * 2,
             });
 
+            // Boundary validation & repair
+            const bounds = this.validateAndRepairBoundaries(
+              item.startTime ?? (10 + idx * 35),
+              item.endTime ?? (50 + idx * 35),
+              videoInfo.durationSeconds || 600,
+              preferredDuration
+            );
+
             return {
               id: `clip-${videoInfo.id}-${idx + 1}`,
               title: item.title || `Viral Clip #${idx + 1}`,
               score: scoring.totalScore,
               scoringBreakdown: scoring,
-              startTime: item.startTime || 10 + idx * 35,
-              endTime: item.endTime || 50 + idx * 35,
-              duration: item.duration || 40,
+              startTime: bounds.startTime,
+              endTime: bounds.endTime,
+              duration: bounds.duration,
               hook: item.hook || 'Most people overlook this crucial principle...',
               topic: item.topic || 'High Retention Strategy',
               emotion: item.emotion || 'Intrigue & Curiosity',
@@ -186,6 +278,11 @@ Output ONLY raw valid JSON array.`;
               },
             };
           });
+
+          const deduplicated = this.filterOverlappingClips(rawClips);
+          if (deduplicated.length > 0) {
+            return deduplicated;
+          }
         }
       } catch (err) {
         console.warn('AI analysis fell back to heuristic scoring pipeline:', err);
@@ -220,19 +317,26 @@ Output ONLY raw valid JSON array.`;
       },
     ];
 
-    return baseTemplates.map((item, idx) => {
+    const heuristicClips: ClipCandidate[] = baseTemplates.map((item, idx) => {
       const scoring = this.calculateWeightedScore(item.rawScores);
-      const start = 12 + idx * 38;
-      const end = start + Math.min(preferredDuration, 42);
+      const rawStart = 12 + idx * 38;
+      const rawEnd = rawStart + Math.min(preferredDuration, 42);
+
+      const bounds = this.validateAndRepairBoundaries(
+        rawStart,
+        rawEnd,
+        videoInfo.durationSeconds || 600,
+        preferredDuration
+      );
 
       return {
         id: `clip-${videoInfo.id}-${idx + 1}`,
         title: item.title,
         score: scoring.totalScore,
         scoringBreakdown: scoring,
-        startTime: start,
-        endTime: end,
-        duration: end - start,
+        startTime: bounds.startTime,
+        endTime: bounds.endTime,
+        duration: bounds.duration,
         hook: item.hook,
         topic: item.topic,
         emotion: item.emotion,
@@ -281,5 +385,7 @@ Output ONLY raw valid JSON array.`;
         },
       };
     });
+
+    return this.filterOverlappingClips(heuristicClips);
   }
 }
