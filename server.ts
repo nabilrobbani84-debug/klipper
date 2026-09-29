@@ -9,10 +9,13 @@ import { validateVideoUrl, checkRateLimit } from './server/security';
 import { JobQueue } from './server/queue';
 import { VideoProcessingWorker } from './server/worker';
 import { ObjectStorageEngine } from './server/storageEngine';
-import { AuthService } from './server/authService';
+import { AuthService, auth } from './server/authService';
 import { FFmpegEngine } from './server/ffmpegEngine';
 import { TranscriptionEngine } from './server/transcriptionEngine';
 import { ClipDetectionEngine } from './server/clipDetectionEngine';
+import { db } from './server/db';
+import { Logger } from './server/logger';
+import { AppError, formatErrorResponse } from './server/errors';
 
 dotenv.config();
 
@@ -28,36 +31,71 @@ async function startServer() {
   // Instantiate Core Services
   const queue = JobQueue.getInstance();
   const storage = ObjectStorageEngine.getInstance();
-  const auth = AuthService.getInstance();
   const worker = new VideoProcessingWorker();
   worker.startWorker();
 
-  // Rate Limiting & Security Middleware
+  // Security Headers Middleware
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('X-XSS-Protection', '1; mode=block');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    next();
+  });
+
+  // Rate Limiting & SSRF Check Middleware
   app.use('/api', (req, res, next) => {
     const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress || '127.0.0.1';
-    const rateCheck = checkRateLimit(String(clientIp), 60, 60);
+    const rateCheck = checkRateLimit(String(clientIp), 80, 60);
 
-    res.setHeader('X-RateLimit-Limit', '60');
+    res.setHeader('X-RateLimit-Limit', '80');
     res.setHeader('X-RateLimit-Remaining', rateCheck.remaining.toString());
     res.setHeader('X-RateLimit-Reset', rateCheck.resetSeconds.toString());
 
     if (!rateCheck.allowed) {
       return res.status(429).json({
-        error: 'Too Many Requests: Rate limit exceeded. Please wait a moment before sending more requests.',
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Rate limit exceeded. Please wait a moment before sending more requests.',
+          retryAfterSeconds: rateCheck.resetSeconds,
+          timestamp: new Date().toISOString(),
+        },
       });
     }
 
     next();
   });
 
-  // Health Check
-  app.get('/api/health', (_req, res) => {
+  // Extract / Authenticate User Session on all /api requests
+  app.use('/api', (req, res, next) => {
+    auth.authenticateRequest(req, res, next);
+  });
+
+  // Health, Readiness, and Version Endpoints (Requirement 28)
+  app.get('/health', (_req, res) => {
     res.json({
-      status: 'ok',
-      service: 'ClipForge AI Enterprise Engine',
-      ffmpeg: 'available',
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      uptimeSeconds: Math.round(process.uptime()),
+    });
+  });
+
+  app.get('/ready', (_req, res) => {
+    res.json({
+      status: 'ready',
+      database: 'connected',
       queue: 'active',
-      storage: 'ready',
+      workerPool: 'ready',
+      ffmpeg: 'available',
+    });
+  });
+
+  app.get('/version', (_req, res) => {
+    res.json({
+      name: 'ClipForge AI Enterprise',
+      version: '2.4.0-production',
+      nodeVersion: process.version,
+      platform: process.platform,
     });
   });
 
@@ -69,86 +107,156 @@ async function startServer() {
       ...metrics,
       storageUsageMb: storageMetrics.totalMb,
       totalStoredFiles: storageMetrics.filesCount,
+      memoryUsageMb: Math.round(process.memoryUsage().rss / (1024 * 1024)),
     });
   });
 
   // Authentication Endpoints
   app.post('/api/auth/register', (req, res) => {
-    const { name, email } = req.body;
-    if (!name || !email) {
-      return res.status(400).json({ error: 'Name and email are required' });
+    try {
+      const { name, email, password } = req.body;
+      if (!name || !email) {
+        throw new AppError('UNAUTHORIZED', 'Name and email are required');
+      }
+      const result = auth.register(name, email, password);
+      res.json(result);
+    } catch (err) {
+      res.status(400).json(formatErrorResponse(err));
     }
-    const result = auth.register(name, email);
-    res.json(result);
   });
 
   app.post('/api/auth/login', (req, res) => {
-    const { email } = req.body;
-    const result = auth.login(email || 'creator@clipforge.ai');
-    if (!result) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+    try {
+      const { email, password } = req.body;
+      const result = auth.login(email || 'creator@clipforge.ai', password);
+      res.json(result);
+    } catch (err) {
+      res.status(401).json(formatErrorResponse(err));
     }
-    res.json(result);
   });
 
   app.post('/api/auth/google', (req, res) => {
-    const { name, email } = req.body;
-    const result = auth.googleLogin(name, email);
-    res.json(result);
+    try {
+      const { name, email } = req.body;
+      const result = auth.googleLogin(name, email);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json(formatErrorResponse(err));
+    }
   });
 
   app.get('/api/auth/me', (req, res) => {
-    const authHeader = req.headers.authorization;
-    const token = authHeader ? authHeader.replace(/^Bearer\s+/, '') : '';
-    const user = auth.verifySession(token);
-    if (!user) {
-      return res.json({ user: auth.login('creator@clipforge.ai')?.user });
+    const user = (req as any).user;
+    const usage = user ? db.getUsage(user.id) : null;
+    res.json({
+      user: {
+        ...user,
+        credits: usage?.creditsRemaining ?? 120,
+        minutesUsed: Math.round((usage?.processingSeconds || 0) / 60),
+        minutesLimit: user?.plan === 'pro' ? 600 : user?.plan === 'creator' ? 180 : 60,
+      },
+    });
+  });
+
+  // User Usage & Credit Balance Endpoint
+  app.get('/api/user/usage', (req, res) => {
+    const user = (req as any).user;
+    const usage = db.getUsage(user.id);
+    res.json({
+      creditsRemaining: usage.creditsRemaining,
+      processingMinutes: Math.round(usage.processingSeconds / 60),
+      renderingMinutes: Math.round(usage.renderingSeconds / 60),
+      storageMb: Math.round((usage.storageBytes / (1024 * 1024)) * 10) / 10,
+    });
+  });
+
+  // Projects CRUD Endpoints
+  app.get('/api/projects', (req, res) => {
+    const user = (req as any).user;
+    const userProjects = db.findProjectsByUserId(user.id);
+    res.json({ projects: userProjects });
+  });
+
+  app.get('/api/projects/:id', (req, res) => {
+    const project = db.findProjectById(req.params.id);
+    if (!project) {
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Project not found', 404)));
     }
-    res.json({ user });
+    const clips = db.findClipsByProjectId(project.id);
+    res.json({ project, clips });
+  });
+
+  app.delete('/api/projects/:id', (req, res) => {
+    const user = (req as any).user;
+    const project = db.findProjectById(req.params.id);
+    if (!project) {
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Project not found', 404)));
+    }
+    // Authorization check
+    if (project.userId !== user.id && user.role !== 'ADMIN') {
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to this project', 403)));
+    }
+    db.deleteProject(req.params.id);
+    res.json({ success: true, message: 'Project and all clips deleted' });
   });
 
   // Create Video Processing Pipeline Job (with SSRF protection & credit deduction)
   app.post('/api/jobs', async (req, res) => {
     try {
-      const { videoUrl, videoInfo, contentGoal, hookType, preferredDuration, userId = 'usr_default' } = req.body;
+      const { videoUrl, videoInfo, contentGoal, hookType, preferredDuration } = req.body;
+      const user = (req as any).user;
 
       if (!videoUrl && !videoInfo?.url) {
-        return res.status(400).json({ error: 'Valid YouTube URL is required' });
+        throw new AppError('INVALID_URL', 'Valid YouTube URL is required', 400);
       }
 
       const targetUrl = videoUrl || videoInfo.url;
       const validation = validateVideoUrl(targetUrl);
       if (!validation.isValid) {
-        return res.status(400).json({ error: validation.error || 'Invalid or forbidden URL' });
+        throw new AppError('INVALID_URL', validation.error || 'Invalid or forbidden URL', 400);
       }
 
-      // Check and deduct credits: 1 processing minute = 1 credit, AI analysis = 5 credits
+      // Check and deduct credits: 5 credits for AI analysis + 1 credit per minute
       const estMinutes = Math.ceil((videoInfo?.durationSeconds || 600) / 60);
       const creditCost = 5 + estMinutes;
-      const creditCheck = auth.deductCredits(userId, creditCost, estMinutes);
+      const creditCheck = auth.deductCredits(user.id, creditCost, estMinutes * 60);
       if (!creditCheck.success) {
-        return res.status(402).json({ error: creditCheck.error });
+        throw new AppError('QUOTA_EXCEEDED', creditCheck.error || 'Insufficient credits', 402);
       }
 
       // Create queue job
       const job = queue.createJob({
         type: 'ANALYZE_VIDEO',
-        userId,
+        userId: user.id,
         videoUrl: validation.sanitizedUrl,
         videoInfo,
       });
 
-      // Immediate response with Job ID for async polling
       res.status(202).json({
         jobId: job.id,
         status: job.status,
         stage: job.currentStage,
-        message: 'Processing job accepted into queue',
+        message: 'Processing job accepted into worker queue',
       });
     } catch (err: any) {
-      console.error('Job creation error:', err);
-      res.status(500).json({ error: err?.message || 'Failed to submit processing job' });
+      Logger.error(`Job creation failed: ${err.message}`);
+      res.status(err.statusCode || 500).json(formatErrorResponse(err));
     }
+  });
+
+  // Real-Time Server-Sent Events (SSE) Stream for Job Status
+  app.get('/api/jobs/:id/events', (req, res) => {
+    const job = queue.getJob(req.params.id);
+    if (!job) {
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404)));
+    }
+
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    queue.registerSSEClient(req.params.id, res);
   });
 
   // Get All Queue Jobs
@@ -160,44 +268,57 @@ async function startServer() {
   app.get('/api/jobs/:id', (req, res) => {
     const job = queue.getJob(req.params.id);
     if (!job) {
-      return res.status(404).json({ error: 'Job not found' });
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404)));
     }
     res.json({ job });
   });
 
   // Cancel Job
   app.post('/api/jobs/:id/cancel', (req, res) => {
-    const success = queue.cancelJob(req.params.id);
-    if (!success) {
-      return res.status(400).json({ error: 'Cannot cancel job (not found or already completed)' });
+    const user = (req as any).user;
+    const job = queue.getJob(req.params.id);
+    if (!job) {
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'Job not found', 404)));
     }
-    res.json({ success: true, message: 'Job cancelled' });
+    if (job.userId !== user.id && user.role !== 'ADMIN') {
+      return res.status(403).json(formatErrorResponse(new AppError('FORBIDDEN', 'Access denied to cancel this job', 403)));
+    }
+
+    const success = queue.cancelJob(req.params.id);
+    res.json({ success, message: success ? 'Job cancelled' : 'Cannot cancel job' });
   });
 
   // Submit Server-Side FFmpeg Render Job
   app.post('/api/jobs/render', (req, res) => {
     try {
-      const { clip, resolution = '1080p', aspectRatio = '9:16', userId = 'usr_default' } = req.body;
+      const { clip, resolution = '1080p', aspectRatio = '9:16' } = req.body;
+      const user = (req as any).user;
+
       if (!clip) {
-        return res.status(400).json({ error: 'Clip details required for render job' });
+        throw new AppError('RENDER_FAILED', 'Clip details required for render job', 400);
+      }
+
+      // Feature Gating: 4K rendering requires 'pro' or 'business' plan
+      if (resolution === '4K' && user.plan !== 'pro' && user.plan !== 'business') {
+        throw new AppError('FORBIDDEN', '4K ultra-high definition export requires Pro or Business subscription', 403);
       }
 
       // Deduct 2 credits per rendered minute
       const renderCredits = Math.max(2, Math.ceil((clip.duration || 30) / 30));
-      const creditCheck = auth.deductCredits(userId, renderCredits, 0);
+      const creditCheck = auth.deductCredits(user.id, renderCredits, 0);
       if (!creditCheck.success) {
-        return res.status(402).json({ error: creditCheck.error });
+        throw new AppError('QUOTA_EXCEEDED', creditCheck.error || 'Insufficient credits', 402);
       }
 
       const job = queue.createJob({
         type: 'RENDER_CLIP',
-        userId,
+        userId: user.id,
         clipId: clip.id,
         targetResolution: resolution,
         targetAspectRatio: aspectRatio,
       });
 
-      // Pass clip directly to worker execution in background
+      // Pass clip to worker execution in background
       setTimeout(() => {
         worker.executeRenderPipeline(job, clip).catch(err => {
           queue.failJob(job.id, err.message);
@@ -210,22 +331,22 @@ async function startServer() {
         message: 'FFmpeg render job queued',
       });
     } catch (err: any) {
-      res.status(500).json({ error: err.message });
+      res.status(err.statusCode || 500).json(formatErrorResponse(err));
     }
   });
 
-  // Direct Synchronous AI Clip Analysis (with 7-factor weighted scoring)
+  // Synchronous AI Clip Analysis (with 7-factor weighted scoring)
   app.post('/api/analyze-clips', async (req, res) => {
     try {
       const { videoInfo, contentGoal, hookType, preferredDuration, language = 'auto' } = req.body;
 
       if (!videoInfo?.url) {
-        return res.status(400).json({ error: 'Video info is required' });
+        throw new AppError('INVALID_URL', 'Video info is required', 400);
       }
 
       const validation = validateVideoUrl(videoInfo.url);
       if (!validation.isValid) {
-        return res.status(400).json({ error: validation.error });
+        throw new AppError('INVALID_URL', validation.error || 'Invalid URL', 400);
       }
 
       const transcription = await TranscriptionEngine.transcribe(
@@ -250,8 +371,8 @@ async function startServer() {
         language: transcription.language,
       });
     } catch (err: any) {
-      console.error('Synchronous clip analysis error:', err);
-      res.status(500).json({ error: err.message || 'Analysis failed' });
+      Logger.error(`Synchronous clip analysis error: ${err.message}`);
+      res.status(err.statusCode || 500).json(formatErrorResponse(err));
     }
   });
 
@@ -260,7 +381,7 @@ async function startServer() {
     const { path: relPath, expires, token } = req.query;
 
     if (!relPath || !expires || !token) {
-      return res.status(400).json({ error: 'Missing signed URL verification parameters' });
+      return res.status(400).json(formatErrorResponse(new AppError('STORAGE_FAILED', 'Missing signed URL parameters', 400)));
     }
 
     const isValid = storage.verifySignedUrl(
@@ -270,12 +391,12 @@ async function startServer() {
     );
 
     if (!isValid) {
-      return res.status(403).json({ error: 'Signature invalid or URL expired' });
+      return res.status(403).json(formatErrorResponse(new AppError('UNAUTHORIZED', 'Signature invalid or download URL expired', 403)));
     }
 
     const absPath = storage.getFilePath(String(relPath));
     if (!fs.existsSync(absPath)) {
-      return res.status(404).json({ error: 'File not found or expired from storage' });
+      return res.status(404).json(formatErrorResponse(new AppError('NOT_FOUND', 'File not found or expired from storage', 404)));
     }
 
     const filename = path.basename(absPath);
@@ -296,8 +417,14 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
+  // Central Error Handler Middleware
+  app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    Logger.error(`Unhandled Server Error: ${err.message}`, { stack: err.stack });
+    res.status(err.statusCode || 500).json(formatErrorResponse(err));
+  });
+
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`ClipForge AI Enterprise Engine running on http://0.0.0.0:${PORT}`);
+    Logger.info(`ClipForge AI Enterprise Engine running on http://0.0.0.0:${PORT}`);
   });
 }
 

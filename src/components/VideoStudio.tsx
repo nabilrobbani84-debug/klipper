@@ -118,8 +118,12 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
       videoRef.current.pause();
       setIsPlaying(false);
     } else {
-      videoRef.current.play();
-      setIsPlaying(true);
+      videoRef.current.play().then(() => {
+        setIsPlaying(true);
+      }).catch((err) => {
+        console.warn('Playback play request was prevented:', err);
+        setIsPlaying(false);
+      });
     }
   };
 

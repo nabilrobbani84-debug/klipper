@@ -247,6 +247,7 @@ export interface QueueJob {
   error?: string;
   logs: JobLogEntry[];
   resultData?: {
+    projectId?: string;
     clips?: ClipCandidate[];
     exportUrl?: string;
     thumbnailUrl?: string;

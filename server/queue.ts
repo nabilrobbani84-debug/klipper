@@ -1,18 +1,23 @@
 import crypto from 'crypto';
+import { Response } from 'express';
 import { QueueJob, JobStage, JobStatus, JobLogEntry, SystemMetrics } from '../src/types';
+import { db } from './db';
+import { Logger } from './logger';
 
 type JobListener = (job: QueueJob) => void;
 
 export class JobQueue {
   private static instance: JobQueue;
-  private jobs: Map<string, QueueJob> = new Map();
-  private listeners: Set<JobListener> = new Set();
-  private maxConcurrency: number = 4;
-  private activeJobsCount: number = 0;
-  private totalRenderTimeAccumulator: number = 0;
-  private totalCompletedRenders: number = 0;
+  private jobs = new Map<string, QueueJob>();
+  private listeners = new Set<JobListener>();
+  private sseClients = new Map<string, Set<Response>>();
+  private maxConcurrency = 4;
+  private totalRenderTimeAccumulator = 0;
+  private totalCompletedRenders = 0;
 
-  private constructor() {}
+  private constructor() {
+    this.hydrateFromDb();
+  }
 
   public static getInstance(): JobQueue {
     if (!JobQueue.instance) {
@@ -21,12 +26,54 @@ export class JobQueue {
     return JobQueue.instance;
   }
 
+  private hydrateFromDb() {
+    try {
+      const persistedJobs = db.getAllRenderJobs();
+      for (const pj of persistedJobs) {
+        this.jobs.set(pj.id, {
+          id: pj.id,
+          type: pj.type as any,
+          userId: pj.userId,
+          clipId: pj.clipId,
+          targetResolution: pj.targetResolution as any,
+          targetAspectRatio: pj.targetAspectRatio as any,
+          status: pj.status as any,
+          currentStage: pj.currentStage as any,
+          progressPercent: pj.progress,
+          currentAttempt: pj.attempts,
+          maxAttempts: pj.maxAttempts,
+          createdAt: pj.createdAt,
+          startedAt: pj.startedAt,
+          completedAt: pj.completedAt,
+          error: pj.error,
+          logs: pj.logs || [],
+          resultData: pj.resultData,
+        });
+      }
+    } catch (e) {
+      console.warn('[Queue] Hydration note:', e);
+    }
+  }
+
   public createJob(params: Partial<QueueJob> & { type: QueueJob['type']; userId: string }): QueueJob {
+    // Idempotency check: if an identical video analysis is currently active, return existing job
+    if (params.type === 'ANALYZE_VIDEO' && params.videoUrl) {
+      const activeJob = Array.from(this.jobs.values()).find(
+        j => j.type === 'ANALYZE_VIDEO' &&
+             j.videoUrl === params.videoUrl &&
+             (j.status === 'pending' || j.status === 'processing')
+      );
+      if (activeJob) {
+        Logger.info('Returning existing idempotent job for URL', { jobId: activeJob.id, url: params.videoUrl });
+        return activeJob;
+      }
+    }
+
     const jobId = `job_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
     const initialLog: JobLogEntry = {
       timestamp: new Date().toLocaleTimeString(),
       stage: 'QUEUED',
-      message: `Job ${jobId} queued in worker pipeline`,
+      message: `Job ${jobId} initialized in worker pipeline`,
       level: 'info',
     };
 
@@ -49,6 +96,25 @@ export class JobQueue {
     };
 
     this.jobs.set(jobId, newJob);
+
+    // Save to DB
+    db.saveRenderJob({
+      id: newJob.id,
+      userId: newJob.userId,
+      clipId: newJob.clipId,
+      type: newJob.type,
+      targetResolution: newJob.targetResolution || '1080p',
+      targetAspectRatio: newJob.targetAspectRatio || '9:16',
+      status: 'pending',
+      currentStage: 'QUEUED',
+      progress: 0,
+      attempts: 1,
+      maxAttempts: 3,
+      logs: [initialLog],
+      createdAt: newJob.createdAt,
+    });
+
+    Logger.info('New job queued', { jobId, type: params.type, userId: params.userId });
     this.notify(newJob);
     return newJob;
   }
@@ -102,13 +168,34 @@ export class JobQueue {
         message: logMsg,
         level: logLevel,
       });
-      // Cap log length
       if (job.logs.length > 50) {
         job.logs = job.logs.slice(-50);
       }
     }
 
+    // Persist update
+    db.saveRenderJob({
+      id: job.id,
+      userId: job.userId,
+      clipId: job.clipId,
+      type: job.type,
+      targetResolution: job.targetResolution || '1080p',
+      targetAspectRatio: job.targetAspectRatio || '9:16',
+      status: job.status,
+      currentStage: job.currentStage,
+      progress: job.progressPercent,
+      attempts: job.currentAttempt,
+      maxAttempts: job.maxAttempts,
+      error: job.error,
+      logs: job.logs,
+      resultData: job.resultData,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      createdAt: job.createdAt,
+    });
+
     this.notify(job);
+    this.broadcastSSE(jobId, job);
   }
 
   public failJob(jobId: string, error: string, retryDelayMs: number = 2000): boolean {
@@ -132,13 +219,15 @@ export class JobQueue {
         level: 'warn',
       });
       this.notify(job);
-      return true; // will retry
+      this.broadcastSSE(jobId, job);
+      return true;
     } else {
       job.status = 'failed';
       job.error = error;
       job.currentStage = 'FAILED';
       this.notify(job);
-      return false; // dead letter / permanently failed
+      this.broadcastSSE(jobId, job);
+      return false;
     }
   }
 
@@ -154,7 +243,46 @@ export class JobQueue {
       level: 'warn',
     });
     this.notify(job);
+    this.broadcastSSE(jobId, job);
     return true;
+  }
+
+  // Server-Sent Events (SSE) Registration
+  public registerSSEClient(jobId: string, res: Response) {
+    if (!this.sseClients.has(jobId)) {
+      this.sseClients.set(jobId, new Set());
+    }
+    this.sseClients.get(jobId)!.add(res);
+
+    // Send current snapshot immediately
+    const current = this.jobs.get(jobId);
+    if (current) {
+      res.write(`data: ${JSON.stringify(current)}\n\n`);
+    }
+
+    res.on('close', () => {
+      const clients = this.sseClients.get(jobId);
+      if (clients) {
+        clients.delete(res);
+        if (clients.size === 0) {
+          this.sseClients.delete(jobId);
+        }
+      }
+    });
+  }
+
+  private broadcastSSE(jobId: string, job: QueueJob) {
+    const clients = this.sseClients.get(jobId);
+    if (clients) {
+      const payload = `data: ${JSON.stringify(job)}\n\n`;
+      for (const res of clients) {
+        try {
+          res.write(payload);
+        } catch {
+          clients.delete(res);
+        }
+      }
+    }
   }
 
   public getSystemMetrics(): SystemMetrics {

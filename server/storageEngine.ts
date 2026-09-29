@@ -90,12 +90,20 @@ export class ObjectStorageEngine {
   }
 
   public verifySignedUrl(relativePath: string, expiresAt: string, token: string): boolean {
+    if (!token || typeof token !== 'string') {
+      return false;
+    }
     if (new Date(expiresAt).getTime() < Date.now()) {
       return false; // Expired
     }
     const hmac = crypto.createHmac('sha256', SECRET_SIGNING_KEY);
     hmac.update(`${relativePath}:${expiresAt}`);
     const expected = hmac.digest('hex').substring(0, 32);
+
+    if (token.length !== expected.length) {
+      return false;
+    }
+
     return crypto.timingSafeEqual(Buffer.from(token), Buffer.from(expected));
   }
 

@@ -152,9 +152,13 @@ export async function analyzeVideoWithAI(
       const parsed = data.clips;
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed.map((item: any, idx: number) => ({
-          id: `clip-${videoInfo.id}-${idx + 1}`,
+          ...item,
+          id: item.id || `clip-${videoInfo.id}-${idx + 1}`,
           title: item.title || `Viral Clip #${idx + 1}`,
           score: item.score || (95 - idx * 4),
+          scoringBreakdown: item.scoringBreakdown,
+          smartReframe: item.smartReframe,
+          language: item.language || data.language || 'auto',
           startTime: item.startTime || (15 + idx * 40),
           endTime: item.endTime || (55 + idx * 40),
           duration: item.duration || 40,
@@ -163,30 +167,22 @@ export async function analyzeVideoWithAI(
           emotion: item.emotion || 'Intrigue / Motivation',
           estimatedEngagement: item.estimatedEngagement || `${92 - idx * 3}% Viral Potential`,
           viralityReason: item.viralityReason || 'Strong pattern interrupt, concise delivery, high retention hook.',
-          clipStyle: 'viral-short' as const,
-          aspectRatio: '9:16' as const,
-          editingPreset: 'dynamic-mrbeast' as const,
-          thumbnailUrl: videoInfo.thumbnailUrl,
-          videoUrl: videoInfo.videoUrl,
-          captions: {
+          clipStyle: item.clipStyle || ('viral-short' as const),
+          aspectRatio: item.aspectRatio || ('9:16' as const),
+          editingPreset: item.editingPreset || ('dynamic-mrbeast' as const),
+          thumbnailUrl: item.thumbnailUrl || videoInfo.thumbnailUrl,
+          videoUrl: item.videoUrl || videoInfo.videoUrl,
+          captions: item.captions || {
             ...DEFAULT_CAPTIONS,
             preset: 'bold-viral',
           },
-          reframing: {
+          reframing: item.reframing || {
             ...DEFAULT_REFRAMING,
-            mode: 'face',
+            mode: 'speaker',
           },
-          audio: DEFAULT_AUDIO,
-          transcript: item.transcript || [
-            {
-              id: `t-${idx}-1`,
-              start: 15 + idx * 40,
-              end: 35 + idx * 40,
-              speaker: 'Speaker',
-              text: item.hook || 'Most people think success is complicated, but it comes down to one single metric.',
-            },
-          ],
-          bRolls: [],
+          audio: item.audio || DEFAULT_AUDIO,
+          transcript: item.transcript || (data.transcription?.sentences ? data.transcription.sentences.slice(idx * 2, idx * 2 + 3) : []),
+          bRolls: item.bRolls || [],
           social: item.social || {
             youtubeShorts: {
               title: `${item.title || 'Must Watch Moment'} #shorts`,

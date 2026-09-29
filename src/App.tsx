@@ -105,6 +105,14 @@ export default function App() {
   const [activeReframeClip, setActiveReframeClip] = useState<ClipCandidate | null>(null);
   const [socialModalClip, setSocialModalClip] = useState<ClipCandidate | null>(null);
   const [exportModalClip, setExportModalClip] = useState<ClipCandidate | null>(null);
+  const [appNotification, setAppNotification] = useState<{ message: string; type: 'error' | 'success' | 'info' } | null>(null);
+
+  // Auto-dismiss notification after 5s
+  useEffect(() => {
+    if (!appNotification) return;
+    const timer = setTimeout(() => setAppNotification(null), 5000);
+    return () => clearTimeout(timer);
+  }, [appNotification]);
 
   // Export Records
   const [exports, setExports] = useState<ExportRecord[]>([
@@ -197,7 +205,10 @@ export default function App() {
       // Navigate to clips list
       setCurrentTab('clips');
     } catch (err: any) {
-      alert(err.message || 'An error occurred while analyzing the YouTube video.');
+      setAppNotification({
+        message: err.message || 'An error occurred while analyzing the YouTube video.',
+        type: 'error',
+      });
     } finally {
       setIsProcessing(false);
       setProcessingVideoInfo(null);
@@ -474,6 +485,24 @@ export default function App() {
         isOpen={isLegalOpen}
         onClose={() => setIsLegalOpen(false)}
       />
+
+      {/* Floating Application Notification Toast */}
+      {appNotification && (
+        <div className="fixed bottom-6 right-6 z-50 max-w-md p-4 rounded-2xl glass-panel shadow-2xl border flex items-center justify-between gap-3 animate-in slide-in-from-bottom-5 duration-300 border-red-500/40 bg-red-950/40 text-red-200">
+          <div className="flex items-center gap-2.5 min-w-0">
+            <span className="w-2.5 h-2.5 rounded-full bg-red-400 shrink-0" />
+            <p className="text-xs font-semibold truncate leading-relaxed">
+              {appNotification.message}
+            </p>
+          </div>
+          <button
+            onClick={() => setAppNotification(null)}
+            className="text-xs font-bold text-white/70 hover:text-white px-2 py-1 rounded-lg hover:bg-white/10 shrink-0 cursor-pointer"
+          >
+            ✕
+          </button>
+        </div>
+      )}
     </div>
   );
 }

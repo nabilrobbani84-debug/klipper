@@ -5,7 +5,10 @@ import { FFmpegEngine } from './ffmpegEngine';
 import { TranscriptionEngine } from './transcriptionEngine';
 import { ClipDetectionEngine } from './clipDetectionEngine';
 import { ObjectStorageEngine } from './storageEngine';
-import { QueueJob, ClipCandidate, YouTubeVideoInfo, ContentGoal, HookType } from '../src/types';
+import { analysisCache } from './cache';
+import { db } from './db';
+import { Logger } from './logger';
+import { QueueJob, ClipCandidate, ContentGoal, HookType } from '../src/types';
 
 export class VideoProcessingWorker {
   private queue = JobQueue.getInstance();
@@ -13,7 +16,7 @@ export class VideoProcessingWorker {
   private isProcessing = false;
 
   public async startWorker() {
-    console.log('[Worker] Video Processing Worker initialized and listening for jobs...');
+    Logger.info('Video Processing Worker pool initialized and listening for jobs...');
     // Poll loop
     setInterval(() => {
       this.checkAndProcessNextJob();
@@ -36,7 +39,10 @@ export class VideoProcessingWorker {
         await this.executeRenderPipeline(pendingJob);
       }
     } catch (err: any) {
-      console.error(`[Worker] Unhandled error processing job ${pendingJob.id}:`, err);
+      Logger.error(`Unhandled error processing job ${pendingJob.id}: ${err.message}`, {
+        jobId: pendingJob.id,
+        stage: pendingJob.currentStage,
+      });
       const willRetry = this.queue.failJob(pendingJob.id, err?.message || 'Processing failed');
       if (willRetry) {
         setTimeout(() => {
@@ -75,46 +81,67 @@ export class VideoProcessingWorker {
 
     // Stage 1: DOWNLOAD_VIDEO
     this.queue.updateJobStage(job.id, 'DOWNLOAD_VIDEO', 10, 'Resolving YouTube stream manifest and metadata...');
-    await new Promise(r => setTimeout(r, 600));
+    await new Promise(r => setTimeout(r, 450));
 
-    // Stage 2: TRANSCRIBE
-    this.queue.updateJobStage(job.id, 'TRANSCRIBE', 25, 'Transcribing speech audio with neural multilingual ASR...');
-    const transcription = await TranscriptionEngine.transcribe(
-      videoInfo.title,
-      videoInfo.durationSeconds,
-      { language: 'auto' }
-    );
-    this.queue.updateJobStage(
-      job.id,
-      'TRANSCRIBE',
-      40,
-      `Generated ${transcription.sentences.length} sentence segments with word-level timestamps (${transcription.language.toUpperCase()})`
-    );
-    await new Promise(r => setTimeout(r, 500));
+    // Check Cache for Idempotency
+    const cacheKey = analysisCache.generateKey(videoInfo.id, contentGoal, hookType, preferredDuration, 'auto');
+    const cached = analysisCache.get(cacheKey);
 
-    // Stage 3: ANALYZE & 4: FIND_CLIPS
-    this.queue.updateJobStage(job.id, 'ANALYZE', 55, 'Running 7-factor weighted scoring: Hook(25%), Info(20%), Emotion(15%)...');
-    const clips = await ClipDetectionEngine.detectClips(
-      videoInfo,
-      transcription.sentences,
-      transcription.speakerCuts,
-      contentGoal,
-      hookType,
-      preferredDuration,
-      transcription.language
-    );
-    this.queue.updateJobStage(job.id, 'FIND_CLIPS', 70, `Discovered ${clips.length} viral moment candidates scoring >= 88/100`);
-    await new Promise(r => setTimeout(r, 500));
+    let transcription;
+    let clips: ClipCandidate[];
+
+    if (cached) {
+      this.queue.updateJobStage(job.id, 'ANALYZE', 60, 'Retrieved cached transcription and viral scores (Instant Cache Hit)');
+      transcription = cached.transcription;
+      clips = cached.clips;
+    } else {
+      // Stage 2: TRANSCRIBE
+      this.queue.updateJobStage(job.id, 'TRANSCRIBE', 25, 'Transcribing speech audio with neural multilingual ASR...');
+      transcription = await TranscriptionEngine.transcribe(
+        videoInfo.title,
+        videoInfo.durationSeconds,
+        { language: 'auto' }
+      );
+      this.queue.updateJobStage(
+        job.id,
+        'TRANSCRIBE',
+        40,
+        `Generated ${transcription.sentences.length} sentence segments with word-level timestamps (${transcription.language.toUpperCase()})`
+      );
+      await new Promise(r => setTimeout(r, 400));
+
+      // Stage 3: ANALYZE & 4: FIND_CLIPS
+      this.queue.updateJobStage(job.id, 'ANALYZE', 55, 'Running 7-factor weighted scoring: Hook(25%), Info(20%), Emotion(15%)...');
+      clips = await ClipDetectionEngine.detectClips(
+        videoInfo,
+        transcription.sentences,
+        transcription.speakerCuts,
+        contentGoal,
+        hookType,
+        preferredDuration,
+        transcription.language
+      );
+
+      // Save to cache
+      analysisCache.set(cacheKey, {
+        videoId: videoInfo.id,
+        clips,
+        transcription,
+      });
+    }
+
+    this.queue.updateJobStage(job.id, 'FIND_CLIPS', 70, `Ranked ${clips.length} viral moment candidates scoring >= 88/100`);
+    await new Promise(r => setTimeout(r, 350));
 
     // Stage 5: GENERATE_CAPTIONS
     this.queue.updateJobStage(job.id, 'GENERATE_CAPTIONS', 82, 'Generating word-level animated karaoke caption tokens...');
-    await new Promise(r => setTimeout(r, 400));
+    await new Promise(r => setTimeout(r, 300));
 
     // Stage 6: GENERATE_BROLL
-    this.queue.updateJobStage(job.id, 'GENERATE_BROLL', 92, 'Syncing 9:16 smart reframe camera tracking cuts...');
-    await new Promise(r => setTimeout(r, 400));
+    this.queue.updateJobStage(job.id, 'GENERATE_BROLL', 92, 'Syncing 9:16 smart reframe active speaker camera tracking...');
+    await new Promise(r => setTimeout(r, 300));
 
-    // Stage 7: SAVE TO OBJECT STORAGE & COMPLETE
+    // Stage 7: SAVE TO OBJECT STORAGE & DATABASE
     const projectData = {
       videoInfo,
       transcription,
@@ -129,7 +156,53 @@ export class VideoProcessingWorker {
       'application/json'
     );
 
+    // Save project in Database
+    const projectId = `proj-${videoInfo.id}-${Date.now()}`;
+    db.saveProject({
+      id: projectId,
+      userId: job.userId,
+      sourceUrl: videoInfo.url,
+      sourceVideoId: videoInfo.id,
+      title: videoInfo.title,
+      thumbnailUrl: videoInfo.thumbnailUrl,
+      durationSeconds: videoInfo.durationSeconds,
+      status: 'ready',
+      contentGoal,
+      hookType,
+      preferredDuration,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    });
+
+    // Save clips in Database
+    for (const c of clips) {
+      db.saveClip({
+        id: c.id,
+        projectId,
+        title: c.title,
+        startTime: c.startTime,
+        endTime: c.endTime,
+        duration: c.duration,
+        score: c.score,
+        scoringBreakdown: c.scoringBreakdown,
+        category: c.clipStyle,
+        hook: c.hook,
+        topic: c.topic,
+        emotion: c.emotion,
+        viralityReason: c.viralityReason,
+        transcript: c.transcript,
+        captionsConfig: c.captions,
+        reframingConfig: c.reframing,
+        smartReframeConfig: c.smartReframe,
+        audioConfig: c.audio,
+        socialMetadata: c.social,
+        status: 'ready',
+        createdAt: new Date().toISOString(),
+      });
+    }
+
     job.resultData = {
+      projectId,
       clips,
       exportUrl: projectRecord.signedUrl,
     };
@@ -138,7 +211,7 @@ export class VideoProcessingWorker {
       job.id,
       'COMPLETED',
       100,
-      `Pipeline complete! Generated ${clips.length} viral clips saved to storage.`,
+      `Pipeline complete! Generated ${clips.length} viral clips saved to storage & database.`,
       'success'
     );
   }
@@ -220,6 +293,28 @@ export class VideoProcessingWorker {
     if (fs.existsSync(tempFilePath)) {
       fs.unlinkSync(tempFilePath);
     }
+
+    // Save export entity in Database
+    db.saveExport({
+      id: `export_${job.id}`,
+      projectId: clip?.id,
+      clipId: clip?.id,
+      userId: job.userId,
+      clipTitle,
+      storageKey: storageRecord.path,
+      format: 'mp4',
+      resolution,
+      fps: 60,
+      fileSizeBytes: storageRecord.sizeBytes,
+      signedUrl: storageRecord.signedUrl,
+      expiresAt: storageRecord.expiresAt,
+      createdAt: new Date().toISOString(),
+    });
+
+    // Update user render seconds usage
+    db.updateUsage(job.userId, {
+      renderingSeconds: db.getUsage(job.userId).renderingSeconds + Math.round(duration),
+    });
 
     // Stage 10: COMPLETED
     job.resultData = {

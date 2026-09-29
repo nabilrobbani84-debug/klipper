@@ -38,9 +38,11 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [progressPercent, setProgressPercent] = useState(0);
   const [progressMessage, setProgressMessage] = useState('');
   const [exportedItem, setExportedItem] = useState<ExportRecord | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
 
   const handleStartExport = async () => {
     setIsExporting(true);
+    setExportError(null);
     setStage('rendering');
 
     try {
@@ -116,7 +118,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               } else if (job.status === 'failed') {
                 clearInterval(pollInterval);
                 setIsExporting(false);
-                alert(`Render job error: ${job.error || 'Unknown worker error'}`);
+                setExportError(`Render job error: ${job.error || 'Worker render failed. Please retry.'}`);
               }
             }
           } catch (e) {
@@ -126,6 +128,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           if (pollCount > 60) {
             clearInterval(pollInterval);
             setIsExporting(false);
+            setExportError('Render request timed out. Please check the Queue dashboard.');
           }
         }, 1000);
 
@@ -159,7 +162,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
       setIsExporting(false);
     } catch (err: any) {
       console.error('Export failed', err);
-      alert(err.message || 'Export error');
+      setExportError(err.message || 'Export error encountered');
       setIsExporting(false);
     }
   };
@@ -204,6 +207,19 @@ export const ExportModal: React.FC<ExportModalProps> = ({
             <X className="w-4 h-4" />
           </button>
         </div>
+
+        {/* Error Banner */}
+        {exportError && (
+          <div className="p-3.5 rounded-2xl bg-red-500/10 border border-red-500/30 text-red-300 text-xs mb-4 flex items-center justify-between">
+            <span>{exportError}</span>
+            <button
+              onClick={() => setExportError(null)}
+              className="text-red-400 hover:text-white text-xs font-bold ml-2 cursor-pointer"
+            >
+              Dismiss
+            </button>
+          </div>
+        )}
 
         {/* Selected Clip Info Box */}
         <div className="p-3 rounded-2xl bg-black/40 border border-white/10 flex items-center gap-3 mb-6">
