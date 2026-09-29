@@ -1,5 +1,9 @@
 import fs from 'fs';
 import path from 'path';
+import { DatabaseProvider, UserSettingsEntity } from './databaseProvider';
+import { QueueJob } from '../../src/types';
+
+export * from './databaseProvider';
 
 export interface UserEntity {
   id: string;
@@ -297,10 +301,21 @@ class DatabaseManager {
     return Array.from(this.exports.values()).filter(e => e.userId === userId);
   }
 
-  public deleteExport(id: string): boolean {
+  public deleteExport(id: string, userId?: string): boolean {
+    const item = this.exports.get(id);
+    if (!item) return false;
+    if (userId && item.userId !== userId) return false;
     const deleted = this.exports.delete(id);
     if (deleted) this.persistState();
     return deleted;
+  }
+
+  public updateUsage(userId: string, delta: Partial<UsageEntity>): UsageEntity {
+    const usage = this.getUsage(userId);
+    Object.assign(usage, delta, { updatedAt: new Date().toISOString() });
+    this.usages.set(userId, usage);
+    this.persistState();
+    return usage;
   }
 
   public getUsage(userId: string): UsageEntity {
@@ -322,13 +337,179 @@ class DatabaseManager {
     return usage;
   }
 
-  public updateUsage(userId: string, delta: Partial<UsageEntity>): UsageEntity {
-    const usage = this.getUsage(userId);
-    Object.assign(usage, delta, { updatedAt: new Date().toISOString() });
-    this.usages.set(userId, usage);
+  public name: 'postgresql' | 'cloudflare-d1' | 'in-memory-persistent' = 'in-memory-persistent';
+  private settings: Map<string, UserSettingsEntity> = new Map();
+
+  public async connect(): Promise<void> {
+    this.loadState();
+  }
+
+  public async disconnect(): Promise<void> {
     this.persistState();
-    return usage;
+  }
+
+  public async ping(): Promise<boolean> {
+    return true;
+  }
+
+  public async getUser(id: string): Promise<UserEntity | undefined> {
+    return this.findUserById(id);
+  }
+
+  public async getUserByEmail(email: string): Promise<UserEntity | undefined> {
+    return this.findUserByEmail(email);
+  }
+
+  public async getProject(id: string, userId?: string): Promise<ProjectEntity | undefined> {
+    const proj = this.findProjectById(id);
+    if (!proj) return undefined;
+    if (userId && proj.userId !== userId) return undefined;
+    return proj;
+  }
+
+  public async listProjects(userId: string): Promise<ProjectEntity[]> {
+    return this.findProjectsByUserId(userId);
+  }
+
+  public async getClipsByProjectId(projectId: string): Promise<ClipEntity[]> {
+    return this.findClipsByProjectId(projectId);
+  }
+
+  public async getClipById(id: string): Promise<ClipEntity | undefined> {
+    return this.clips.get(id);
+  }
+
+  public async deleteClip(id: string): Promise<boolean> {
+    const deleted = this.clips.delete(id);
+    if (deleted) this.persistState();
+    return deleted;
+  }
+
+  public async getJob(id: string, userId?: string): Promise<QueueJob | undefined> {
+    const raw = this.renderJobs.get(id);
+    if (!raw) return undefined;
+    if (userId && raw.userId !== userId) return undefined;
+    return raw as any;
+  }
+
+  public async listJobs(userId?: string): Promise<QueueJob[]> {
+    const all = Array.from(this.renderJobs.values());
+    const filtered = userId ? all.filter(j => j.userId === userId) : all;
+    return filtered as any;
+  }
+
+  public async saveJob(job: QueueJob): Promise<QueueJob> {
+    this.saveRenderJob({
+      id: job.id,
+      userId: job.userId,
+      clipId: job.clipId,
+      type: job.type,
+      targetResolution: job.targetResolution || '1080p',
+      targetAspectRatio: job.targetAspectRatio || '9:16',
+      status: job.status,
+      currentStage: job.currentStage,
+      progress: job.progressPercent,
+      attempts: job.currentAttempt,
+      maxAttempts: job.maxAttempts,
+      error: job.error,
+      logs: job.logs,
+      resultData: job.resultData,
+      startedAt: job.startedAt,
+      completedAt: job.completedAt,
+      createdAt: job.createdAt,
+    });
+    return job;
+  }
+
+  public async updateJob(id: string, updates: Partial<QueueJob>): Promise<QueueJob | undefined> {
+    const existing = this.renderJobs.get(id);
+    if (!existing) return undefined;
+    Object.assign(existing, {
+      status: updates.status ?? existing.status,
+      currentStage: updates.currentStage ?? existing.currentStage,
+      progress: updates.progressPercent ?? existing.progress,
+      attempts: updates.currentAttempt ?? existing.attempts,
+      error: updates.error ?? existing.error,
+      logs: updates.logs ?? existing.logs,
+      resultData: updates.resultData ?? existing.resultData,
+      startedAt: updates.startedAt ?? existing.startedAt,
+      completedAt: updates.completedAt ?? existing.completedAt,
+    });
+    this.persistState();
+    return existing as any;
+  }
+
+  public async getExport(id: string, userId?: string): Promise<ExportEntity | undefined> {
+    const item = this.exports.get(id);
+    if (!item) return undefined;
+    if (userId && item.userId !== userId) return undefined;
+    return item;
+  }
+
+  public async listExports(userId: string): Promise<ExportEntity[]> {
+    return this.findExportsByUserId(userId);
+  }
+
+  public async deductCreditsAtomic(
+    userId: string,
+    credits: number,
+    processingSeconds: number
+  ): Promise<{ success: boolean; remainingCredits: number; error?: string }> {
+    const usage = this.getUsage(userId);
+    if (usage.creditsRemaining < credits) {
+      return {
+        success: false,
+        remainingCredits: usage.creditsRemaining,
+        error: `Insufficient credits. Required: ${credits}, Available: ${usage.creditsRemaining}.`,
+      };
+    }
+    const newRemaining = usage.creditsRemaining - credits;
+    this.updateUsage(userId, {
+      creditsRemaining: newRemaining,
+      processingSeconds: usage.processingSeconds + processingSeconds,
+    });
+    return {
+      success: true,
+      remainingCredits: newRemaining,
+    };
+  }
+
+  public async getSettings(userId: string): Promise<UserSettingsEntity> {
+    let setting = this.settings.get(userId);
+    if (!setting) {
+      setting = {
+        id: `setting_${userId}`,
+        userId,
+        defaultLanguage: 'auto',
+        defaultAspectRatio: '9:16',
+        defaultPreset: 'dynamic-mrbeast',
+        defaultResolution: '1080p',
+        autoCaptions: true,
+        autoReframing: true,
+        watermarkEnabled: false,
+        exportFormat: 'mp4',
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+      this.settings.set(userId, setting);
+    }
+    return setting;
+  }
+
+  public async updateSettings(
+    userId: string,
+    delta: Partial<UserSettingsEntity>
+  ): Promise<UserSettingsEntity> {
+    const existing = await this.getSettings(userId);
+    const updated = { ...existing, ...delta, updatedAt: new Date().toISOString() };
+    this.settings.set(userId, updated);
+    this.persistState();
+    return updated;
   }
 }
 
 export const db = DatabaseManager.getInstance();
+
+export function getDatabaseProvider(): DatabaseProvider {
+  return DatabaseManager.getInstance();
+}

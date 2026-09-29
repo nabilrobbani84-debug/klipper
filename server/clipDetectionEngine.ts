@@ -185,18 +185,10 @@ Use this exact JSON schema:
 ]
 Output ONLY raw valid JSON array.`;
 
-        let response;
-        try {
-          response = await ai.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: prompt,
-          });
-        } catch {
-          response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash',
-            contents: prompt,
-          });
-        }
+        const response = await ai.models.generateContent({
+          model: 'gemini-3.8-flash',
+          contents: prompt,
+        });
 
         const text = response.text || '';
         const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();

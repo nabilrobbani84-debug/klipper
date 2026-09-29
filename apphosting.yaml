@@ -1,0 +1,23 @@
+# Firebase App Hosting Configuration for Klipper AI
+# See https://firebase.google.com/docs/app-hosting/configure
+
+runConfig:
+  minInstances: 0
+  maxInstances: 10
+  concurrency: 80
+  cpu: 1
+  memoryMiB: 1024
+
+env:
+  - variable: NODE_ENV
+    value: production
+  - variable: PORT
+    value: "8080"
+  - variable: STORAGE_SIGNING_KEY
+    secret: klipper-storage-signing-key
+  - variable: GEMINI_API_KEY
+    secret: gemini-api-key
+  - variable: DATABASE_URL
+    secret: klipper-database-url
+  - variable: REDIS_URL
+    secret: klipper-redis-url

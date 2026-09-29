@@ -11,6 +11,7 @@ import { JobQueue } from './server/queue';
 import { VideoProcessingWorker } from './server/worker';
 import { ObjectStorageEngine } from './server/storageEngine';
 import { AuthService, auth } from './server/authService';
+import { firebaseAuth } from './server/firebaseAuth';
 import { FFmpegEngine } from './server/ffmpegEngine';
 import { TranscriptionEngine } from './server/transcriptionEngine';
 import { ClipDetectionEngine } from './server/clipDetectionEngine';
@@ -40,8 +41,13 @@ async function startServer() {
   // Instantiate Core Services
   const queue = JobQueue.getInstance();
   const storage = ObjectStorageEngine.getInstance();
-  const worker = new VideoProcessingWorker();
-  worker.startWorker();
+  
+  // Start worker in-process if not explicitly delegated to Cloud Run worker service
+  let inProcessWorker: VideoProcessingWorker | null = null;
+  if (process.env.RUN_WORKER_IN_PROCESS !== 'false') {
+    inProcessWorker = new VideoProcessingWorker();
+    inProcessWorker.startWorker();
+  }
 
   // Security Headers Middleware
   app.use((_req, res, next) => {
@@ -71,12 +77,12 @@ async function startServer() {
     next();
   });
 
-  // Extract / Authenticate User Session on all /api requests
+  // Extract / Authenticate User Session on all /api requests via Firebase or Session Token
   app.use('/api', (req, res, next) => {
-    auth.authenticateRequest(req, res, next);
+    firebaseAuth.middleware()(req, res, next);
   });
 
-  // Health, Readiness, and Version Endpoints (Requirement 28)
+  // Health, Readiness, and Version Endpoints (Requirement 23 & 28)
   app.get('/health', (_req, res) => {
     res.json({
       status: 'healthy',
@@ -85,13 +91,15 @@ async function startServer() {
     });
   });
 
-  app.get('/ready', (_req, res) => {
+  app.get('/ready', async (_req, res) => {
+    const dbConnected = await db.ping();
     res.json({
       status: 'ready',
-      database: 'connected',
+      database: dbConnected ? 'connected' : 'degraded',
       queue: 'active',
-      workerPool: 'ready',
+      workerPool: process.env.RUN_WORKER_IN_PROCESS !== 'false' ? 'in-process' : 'cloud-run-worker',
       ffmpeg: 'available',
+      storage: process.env.STORAGE_PROVIDER || 'cloudflare-r2-compatible',
     });
   });
 
@@ -173,6 +181,19 @@ async function startServer() {
       renderingMinutes: Math.round(usage.renderingSeconds / 60),
       storageMb: Math.round((usage.storageBytes / (1024 * 1024)) * 10) / 10,
     });
+  });
+
+  // User Settings Endpoints (Requirement 6)
+  app.get('/api/user/settings', async (req, res) => {
+    const user = (req as any).user;
+    const settings = await db.getSettings(user.id);
+    res.json({ success: true, settings });
+  });
+
+  app.patch('/api/user/settings', async (req, res) => {
+    const user = (req as any).user;
+    const settings = await db.updateSettings(user.id, req.body);
+    res.json({ success: true, settings });
   });
 
   // Projects CRUD Endpoints (Strict Multi-Tenant Isolation)
@@ -368,12 +389,14 @@ async function startServer() {
         targetAspectRatio: aspectRatio,
       });
 
-      // Pass clip to worker execution in background
-      setTimeout(() => {
-        worker.executeRenderPipeline(job, clip).catch(err => {
-          queue.failJob(job.id, err.message);
-        });
-      }, 50);
+      // Pass clip to worker execution in background if in-process
+      if (inProcessWorker) {
+        setTimeout(() => {
+          inProcessWorker?.executeRenderPipeline(job, clip).catch((err: any) => {
+            queue.failJob(job.id, err?.message || 'Render failed');
+          });
+        }, 50);
+      }
 
       res.status(202).json({
         jobId: job.id,

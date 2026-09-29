@@ -8,7 +8,9 @@ import { AuthService } from '../server/authService';
 import { ObjectStorageEngine } from '../server/storageEngine';
 import { JobQueue } from '../server/queue';
 import { FFmpegEngine } from '../server/ffmpegEngine';
-import { db } from '../server/db';
+import { db, getDatabaseProvider } from '../server/db';
+import { firebaseAuth } from '../server/firebaseAuth';
+import { getStorageProvider, LocalStorageProvider } from '../server/storage/storageProvider';
 
 async function runAllTests() {
   console.log('====================================================');
@@ -335,6 +337,141 @@ async function runAllTests() {
     const res2 = authService.deductCredits(testUser.id, 100, 600);
     assert.strictEqual(res2.success, false);
     assert.strictEqual(res2.remainingCredits, 5); // Credits preserved, not negative
+  });
+
+  // 13. Firebase Authentication ID Token & Session Integration (Requirement 4)
+  console.log('\n🔥 13. Firebase Authentication Integration Tests');
+  await test('Verifies Firebase mock/real ID token and provisions user', async () => {
+    // Generate valid structure Firebase ID Token mock
+    const header = Buffer.from(JSON.stringify({ alg: 'RS256', typ: 'JWT' })).toString('base64url');
+    const payload = Buffer.from(JSON.stringify({
+      iss: 'https://securetoken.google.com/klipper-ai-prod',
+      aud: 'klipper-ai-prod',
+      sub: 'firebase_usr_test_999',
+      email: 'testcreator@klipper.ai',
+      name: 'Firebase Test Creator',
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    })).toString('base64url');
+    const token = `${header}.${payload}.mock_crypto_signature`;
+
+    const user = await firebaseAuth.verifyToken(token);
+    assert.ok(user);
+    assert.strictEqual(user.id, 'firebase_usr_test_999');
+    assert.strictEqual(user.email, 'testcreator@klipper.ai');
+    assert.strictEqual(user.authProvider, 'firebase');
+
+    // Confirm persisted in database
+    const dbUser = await db.getUser('firebase_usr_test_999');
+    assert.ok(dbUser);
+    assert.strictEqual(dbUser.email, 'testcreator@klipper.ai');
+  });
+
+  // 14. Cloudflare R2 / StorageProvider Multi-Folder Operations (Requirement 7 & 13)
+  console.log('\n☁️  14. StorageProvider (R2 & Local) Lifecycle Tests');
+  await test('Uploads, signs, checks existence and cleans up across storage folders', async () => {
+    const storageProvider = new LocalStorageProvider();
+    
+    // Test upload to 'exports' folder
+    const testData = Buffer.from('RIFF....WAVEfmt test audio data');
+    const uploaded = await storageProvider.upload('exports', 'sample_export.mp4', testData, 'video/mp4', 14);
+    assert.ok(uploaded.key.startsWith('exports/'));
+    assert.ok(uploaded.signedUrl.includes('/api/storage/download'));
+
+    // Test exists
+    const exists = await storageProvider.exists('exports', uploaded.filename);
+    assert.strictEqual(exists, true);
+
+    // Test download
+    const downloaded = await storageProvider.download('exports', uploaded.filename);
+    assert.strictEqual(downloaded.length, testData.length);
+
+    // Test delete
+    const deleted = await storageProvider.delete('exports', uploaded.filename);
+    assert.strictEqual(deleted, true);
+
+    const existsAfterDelete = await storageProvider.exists('exports', uploaded.filename);
+    assert.strictEqual(existsAfterDelete, false);
+  });
+
+  // 15. Concurrency Load Test Simulation (Requirement 26)
+  console.log('\n⚡ 15. Queue Concurrency Load Tests (10, 50, 100 Users)');
+  await test('Queue maintains concurrency limits under rapid concurrent submissions', async () => {
+    const queue = JobQueue.getInstance();
+    const batchSizes = [10, 50, 100];
+
+    for (const size of batchSizes) {
+      const jobs = [];
+      for (let i = 0; i < size; i++) {
+        jobs.push(queue.createJob({
+          type: 'ANALYZE_VIDEO',
+          userId: `usr_load_${i}`,
+          videoUrl: `https://youtube.com/watch?v=loadtest_${size}_${i}`,
+        }));
+      }
+
+      assert.strictEqual(jobs.length, size);
+      const metrics = queue.getSystemMetrics();
+      assert.ok(metrics.pendingJobs >= 0);
+      assert.ok(metrics.processingJobs <= metrics.maxWorkers);
+    }
+  });
+
+  // 16. Full End-to-End Pipeline Simulation (Requirement 25)
+  console.log('\n🔄 16. Full E2E Video Processing Pipeline Simulation');
+  await test('Executes full lifecycle: URL -> Transcribe -> Analyze -> Reframe -> Render -> Storage', async () => {
+    const sampleUrl = 'https://www.youtube.com/watch?v=dQw4w9WgXcQ';
+    const validation = validateVideoUrl(sampleUrl);
+    assert.strictEqual(validation.isValid, true);
+
+    // Step 1: Transcription
+    const trans = await TranscriptionEngine.transcribe('Full Lifecycle Pipeline Demo', 90, { language: 'en' });
+    assert.ok(trans.sentences.length > 0);
+
+    // Step 2: AI Clip Detection with 7-factor virality
+    const sampleInfo = {
+      id: 'dQw4w9WgXcQ',
+      url: sampleUrl,
+      title: 'Full Lifecycle Pipeline Demo',
+      channel: 'Klipper Studio',
+      durationSeconds: 90,
+      durationFormatted: '01:30',
+      viewsFormatted: '1M',
+      uploadDate: '2026',
+      resolution: '1080p',
+      thumbnailUrl: 'https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg',
+      videoUrl: 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4',
+      description: 'E2E test',
+    };
+
+    const clips = await ClipDetectionEngine.detectClips(sampleInfo, trans.sentences, trans.speakerCuts, 'retention', 'curiosity', 45, 'en');
+    assert.ok(clips.length > 0);
+    const chosenClip = clips[0];
+    assert.ok(chosenClip.score >= 80);
+    assert.ok(chosenClip.duration >= 15);
+
+    // Step 3: FFmpeg Render to Temp
+    const scratchOut = path.join(process.cwd(), 'storage', 'temp', `e2e_render_${Date.now()}.mp4`);
+    const renderRes = await FFmpegEngine.renderClip({
+      inputPathOrUrl: 'testsrc',
+      outputPath: scratchOut,
+      startTimeSeconds: chosenClip.startTime,
+      durationSeconds: 2,
+      aspectRatio: '9:16',
+      resolution: '720p',
+      cropPanXPercent: 50,
+      normalizeAudio: true,
+      subtitleText: chosenClip.hook,
+    });
+    assert.ok(fs.existsSync(renderRes.outputPath));
+
+    // Step 4: Storage Upload & Signed URL
+    const storageProvider = new LocalStorageProvider();
+    const stored = await storageProvider.upload('exports', path.basename(renderRes.outputPath), fs.readFileSync(renderRes.outputPath), 'video/mp4');
+    assert.ok(stored.signedUrl);
+
+    // Step 5: Clean up scratch
+    fs.unlinkSync(renderRes.outputPath);
+    await storageProvider.delete('exports', stored.filename);
   });
 
   console.log('\n====================================================');

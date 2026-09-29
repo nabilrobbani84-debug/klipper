@@ -132,3 +132,21 @@ export const subscriptions = pgTable('subscriptions', {
   currentPeriodEnd: timestamp('current_period_end').notNull(),
   updatedAt: timestamp('updated_at').notNull().defaultNow(),
 });
+
+/**
+ * User Settings Table
+ */
+export const userSettings = pgTable('user_settings', {
+  id: text('id').primaryKey(),
+  userId: text('user_id').notNull().unique().references(() => users.id, { onDelete: 'cascade' }),
+  defaultLanguage: text('default_language').notNull().default('auto'), // 'auto' | 'en' | 'id'
+  defaultAspectRatio: text('default_aspect_ratio').notNull().default('9:16'), // '9:16' | '16:9' | '1:1' | '4:5'
+  defaultPreset: text('default_preset').notNull().default('dynamic-mrbeast'),
+  defaultResolution: text('default_resolution').notNull().default('1080p'),
+  autoCaptions: boolean('auto_captions').notNull().default(true),
+  autoReframing: boolean('auto_reframing').notNull().default(true),
+  watermarkEnabled: boolean('watermark_enabled').notNull().default(false),
+  exportFormat: text('export_format').notNull().default('mp4'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+});

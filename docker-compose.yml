@@ -1,20 +1,41 @@
 services:
-  clipforge-app:
+  klipper-api:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: clipforge-app
+      dockerfile: Dockerfile.api
+    container_name: klipper-api
     restart: unless-stopped
     ports:
       - "3000:3000"
     environment:
       - NODE_ENV=production
       - PORT=3000
-      - DATABASE_URL=postgresql://clipforge:secure_password_2026@postgres:5432/clipforge_db
+      - RUN_WORKER_IN_PROCESS=false
+      - DATABASE_URL=postgresql://klipper:secure_password_2026@postgres:5432/klipper_db
       - REDIS_URL=redis://redis:6379
       - GEMINI_API_KEY=${GEMINI_API_KEY}
-      - STORAGE_SIGNING_KEY=clipforge-production-signing-secret-2026
+      - STORAGE_SIGNING_KEY=klipper-production-signing-secret-2026
       - APP_URL=http://localhost:3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - storage-data:/app/storage
+
+  klipper-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: klipper-worker
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - DATABASE_URL=postgresql://klipper:secure_password_2026@postgres:5432/klipper_db
+      - REDIS_URL=redis://redis:6379
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - STORAGE_SIGNING_KEY=klipper-production-signing-secret-2026
     depends_on:
       postgres:
         condition: service_healthy
@@ -25,25 +46,25 @@ services:
 
   postgres:
     image: postgres:16-alpine
-    container_name: clipforge-postgres
+    container_name: klipper-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: clipforge
+      POSTGRES_USER: klipper
       POSTGRES_PASSWORD: secure_password_2026
-      POSTGRES_DB: clipforge_db
+      POSTGRES_DB: klipper_db
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U clipforge -d clipforge_db"]
+      test: ["CMD-SHELL", "pg_isready -U klipper -d klipper_db"]
       interval: 5s
       timeout: 5s
       retries: 5
 
   redis:
     image: redis:7-alpine
-    container_name: clipforge-redis
+    container_name: klipper-redis
     restart: unless-stopped
     ports:
       - "6379:6379"
