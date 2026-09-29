@@ -142,16 +142,44 @@ export interface SocialMetadata {
   };
 }
 
+export interface ScoringBreakdown {
+  hook: number;            // 25% weight
+  informationValue: number; // 20% weight
+  emotionalImpact: number;  // 15% weight
+  storyCompleteness: number;// 15% weight
+  pacing: number;           // 10% weight
+  uniqueness: number;       // 5% weight
+  context: number;          // 10% weight
+  totalScore: number;       // Weighted calculated score (0-100)
+  retentionCurve?: number[];// Array of 10 points showing retention % drop-off
+}
+
+export interface SpeakerCutPoint {
+  timestamp: number;
+  speaker: 'Speaker A' | 'Speaker B' | 'Both' | 'Screen';
+  cropPanX: number; // percentage across 16:9 frame (e.g. 25% for Speaker A, 75% for Speaker B)
+  confidence: number;
+}
+
+export interface SmartReframeTrack {
+  mode: ReframingMode;
+  speakersDetected: number;
+  activeSpeakerSwitching: boolean;
+  cutPoints: SpeakerCutPoint[];
+}
+
 export interface ClipCandidate {
   id: string;
   title: string;
   score: number; // 0 - 100
+  scoringBreakdown?: ScoringBreakdown;
   startTime: number; // seconds
   endTime: number; // seconds
   duration: number; // seconds
   hook: string;
   topic: string;
   emotion: string;
+  language?: 'id' | 'en' | 'auto';
   estimatedEngagement: string;
   viralityReason: string;
   clipStyle: ClipStyle;
@@ -161,10 +189,111 @@ export interface ClipCandidate {
   videoUrl: string;
   captions: CaptionConfig;
   reframing: ReframingConfig;
+  smartReframe?: SmartReframeTrack;
   audio: AudioConfig;
   transcript: TranscriptSentence[];
   bRolls: BRollItem[];
   social: SocialMetadata;
+}
+
+export type JobStage =
+  | 'QUEUED'
+  | 'DOWNLOAD_VIDEO'
+  | 'TRANSCRIBE'
+  | 'ANALYZE'
+  | 'FIND_CLIPS'
+  | 'GENERATE_CAPTIONS'
+  | 'GENERATE_BROLL'
+  | 'RENDER'
+  | 'UPLOAD'
+  | 'CLEANUP'
+  | 'COMPLETED'
+  | 'FAILED';
+
+export type JobStatus =
+  | 'pending'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+  | 'retrying'
+  | 'cancelled';
+
+export interface JobLogEntry {
+  timestamp: string;
+  stage: JobStage;
+  message: string;
+  level: 'info' | 'warn' | 'error' | 'success';
+}
+
+export interface QueueJob {
+  id: string;
+  type: 'ANALYZE_VIDEO' | 'RENDER_CLIP' | 'REINDEX';
+  userId: string;
+  videoUrl?: string;
+  videoInfo?: YouTubeVideoInfo;
+  clipId?: string;
+  targetResolution?: '720p' | '1080p' | '1440p' | '4K';
+  targetAspectRatio?: AspectRatio;
+  status: JobStatus;
+  currentStage: JobStage;
+  progressPercent: number;
+  currentAttempt: number;
+  maxAttempts: number;
+  createdAt: string;
+  startedAt?: string;
+  completedAt?: string;
+  durationSeconds?: number;
+  estimatedTimeRemainingSeconds?: number;
+  error?: string;
+  logs: JobLogEntry[];
+  resultData?: {
+    clips?: ClipCandidate[];
+    exportUrl?: string;
+    thumbnailUrl?: string;
+    fileSizeBytes?: number;
+    renderTimeMs?: number;
+  };
+}
+
+export interface SystemMetrics {
+  totalJobs: number;
+  completedJobs: number;
+  failedJobs: number;
+  processingJobs: number;
+  pendingJobs: number;
+  averageRenderTimeSeconds: number;
+  activeWorkers: number;
+  maxWorkers: number;
+  storageUsageMb: number;
+  storageLimitMb: number;
+  queueLatencyMs: number;
+  ffmpegStatus: 'active' | 'busy' | 'idle';
+}
+
+export interface StorageFileRecord {
+  id: string;
+  category: 'original' | 'projects' | 'clips' | 'exports' | 'thumbnails';
+  path: string;
+  sizeBytes: number;
+  mimeType: string;
+  createdAt: string;
+  expiresAt: string;
+  signedUrl: string;
+  retentionDays: number;
+}
+
+export interface TimelineTrackItem {
+  id: string;
+  type: 'video' | 'audio' | 'caption' | 'broll' | 'text' | 'watermark';
+  startTime: number;
+  duration: number;
+  content: string;
+  volume?: number;
+  scale?: number;
+  speed?: number;
+  cropX?: number;
+  cropY?: number;
+  rotate?: number;
 }
 
 export interface YouTubeVideoInfo {

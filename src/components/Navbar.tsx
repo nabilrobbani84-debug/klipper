@@ -11,15 +11,17 @@ import {
   User,
   Settings,
   ShieldCheck,
+  Activity,
 } from 'lucide-react';
 import { UserAccount } from '../types';
 
 interface NavbarProps {
-  currentTab: 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'admin';
-  setCurrentTab: (tab: 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'admin') => void;
+  currentTab: 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'queue' | 'admin';
+  setCurrentTab: (tab: 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'queue' | 'admin') => void;
   user: UserAccount;
   onOpenSubscription: () => void;
   onOpenLegal: () => void;
+  onOpenAuth?: () => void;
   hasActiveProject: boolean;
 }
 
@@ -29,6 +31,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   user,
   onOpenSubscription,
   onOpenLegal,
+  onOpenAuth,
   hasActiveProject,
 }) => {
   return (
@@ -135,6 +138,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           </button>
 
           <button
+            onClick={() => setCurrentTab('queue')}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+              currentTab === 'queue'
+                ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm'
+                : 'text-slate-400 hover:text-white hover:bg-white/5'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5 text-emerald-400" />
+            Queue & Workers
+          </button>
+
+          <button
             onClick={() => setCurrentTab('admin')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
               currentTab === 'admin'
@@ -166,18 +181,18 @@ export const Navbar: React.FC<NavbarProps> = ({
           >
             <Zap className="w-3.5 h-3.5 text-yellow-400 fill-yellow-400 animate-pulse" />
             <span className="font-semibold text-slate-200">
-              {user.minutesLimit - user.minutesUsed}m left
+              {user.credits} credits ({user.minutesLimit - user.minutesUsed}m)
             </span>
             <span className="px-1.5 py-0.2 rounded text-[10px] font-bold uppercase bg-purple-500/30 text-purple-200">
               {user.plan}
             </span>
           </button>
 
-          {/* Profile Avatar */}
+          {/* Profile Avatar / Auth modal trigger */}
           <div
-            onClick={onOpenSubscription}
+            onClick={onOpenAuth || onOpenSubscription}
             className="w-8 h-8 rounded-full ring-2 ring-purple-500/30 overflow-hidden cursor-pointer hover:ring-purple-400 transition-all"
-            title={`${user.name} (${user.email})`}
+            title={`${user.name} (${user.email}) - Click to sign in or switch account`}
           >
             <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
           </div>

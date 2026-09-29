@@ -1,4 +1,3 @@
-import { GoogleGenAI } from '@google/genai';
 import { YouTubeVideoInfo, ClipCandidate, ContentGoal, HookType, Project } from '../types';
 import { SAMPLE_VIDEOS, generateSampleClips, DEFAULT_CAPTIONS, DEFAULT_REFRAMING, DEFAULT_AUDIO } from '../data/sampleVideos';
 
@@ -135,55 +134,22 @@ export async function analyzeVideoWithAI(
     return baseClips;
   }
 
-  // If Gemini API is available, try generating dynamic clips from the video title!
-  const apiKey = (typeof process !== 'undefined' && process.env?.GEMINI_API_KEY) || (import.meta as any).env?.VITE_GEMINI_API_KEY;
-  if (apiKey) {
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const prompt = `You are ClipForge AI, a world-class viral video clipper for YouTube, TikTok, and Instagram Reels.
-Analyze this video:
-Title: "${videoInfo.title}"
-Channel: "${videoInfo.channel}"
-Goal: ${contentGoal}
-Hook Style: ${hookType}
-Target Duration: ${preferredDuration} seconds
+  // Call backend server for server-side Gemini video analysis
+  try {
+    const res = await fetch('/api/analyze-clips', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        videoInfo,
+        contentGoal,
+        hookType,
+        preferredDuration,
+      }),
+    });
 
-Generate 3 high-potential viral clip candidates as JSON with this schema:
-[
-  {
-    "title": "Short catchy clip title",
-    "score": 94,
-    "startTime": 12,
-    "endTime": 54,
-    "duration": 42,
-    "hook": "Opening hook sentence that stops scrolling",
-    "topic": "Main topic",
-    "emotion": "Dominant emotion (e.g. Curiosity, Shock, Inspiration)",
-    "estimatedEngagement": "Estimated virality percent (e.g. 94.8% Viral Potential)",
-    "viralityReason": "Detailed reason why this moment performs well",
-    "transcript": [
-      { "id": "t1", "start": 12, "end": 28, "speaker": "Speaker", "text": "Sentence one text here." },
-      { "id": "t2", "start": 28, "end": 54, "speaker": "Speaker", "text": "Sentence two punchline." }
-    ],
-    "social": {
-      "youtubeShorts": { "title": "Viral YouTube Shorts Title #shorts", "description": "Description...", "hashtags": ["#shorts", "#viral"] },
-      "tikTok": { "caption": "TikTok caption...", "hashtags": ["#fyp", "#trending"] },
-      "reels": { "caption": "Reels caption...", "hashtags": ["#reels", "#explore"] },
-      "facebookReels": { "caption": "FB caption..." }
-    }
-  }
-]
-Output ONLY valid raw JSON array without markdown formatting.`;
-
-      const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: prompt,
-      });
-
-      const text = response.text || '';
-      const cleanJson = text.replace(/```json/g, '').replace(/```/g, '').trim();
-      const parsed = JSON.parse(cleanJson);
-
+    if (res.ok) {
+      const data = await res.json();
+      const parsed = data.clips;
       if (Array.isArray(parsed) && parsed.length > 0) {
         return parsed.map((item: any, idx: number) => ({
           id: `clip-${videoInfo.id}-${idx + 1}`,
@@ -241,9 +207,9 @@ Output ONLY valid raw JSON array without markdown formatting.`;
           },
         }));
       }
-    } catch (e) {
-      console.warn('Gemini dynamic analysis fallback used', e);
     }
+  } catch (e) {
+    console.warn('Backend Gemini API call fallback to default generation', e);
   }
 
   // Default synthetic high-grade clips

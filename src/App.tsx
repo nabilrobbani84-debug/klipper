@@ -13,6 +13,9 @@ import { TemplatesGallery } from './components/TemplatesGallery';
 import { SubscriptionModal } from './components/SubscriptionModal';
 import { AdminDashboard } from './components/AdminDashboard';
 import { LegalNoticeModal } from './components/LegalNoticeModal';
+import { QueueDashboard } from './components/QueueDashboard';
+import { SmartReframeModal } from './components/SmartReframeModal';
+import { AuthModal } from './components/AuthModal';
 
 import {
   Project,
@@ -33,7 +36,7 @@ import { fetchVideoMetadata, analyzeVideoWithAI } from './services/aiClipService
 export default function App() {
   // Navigation State
   const [currentTab, setCurrentTab] = useState<
-    'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'admin'
+    'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'queue' | 'admin'
   >('landing');
 
   // User Account State
@@ -98,6 +101,8 @@ export default function App() {
   // Modals State
   const [isSubscriptionOpen, setIsSubscriptionOpen] = useState(false);
   const [isLegalOpen, setIsLegalOpen] = useState(false);
+  const [isAuthOpen, setIsAuthOpen] = useState(false);
+  const [activeReframeClip, setActiveReframeClip] = useState<ClipCandidate | null>(null);
   const [socialModalClip, setSocialModalClip] = useState<ClipCandidate | null>(null);
   const [exportModalClip, setExportModalClip] = useState<ClipCandidate | null>(null);
 
@@ -133,6 +138,24 @@ export default function App() {
       const videoInfo = await fetchVideoMetadata(url);
       setProcessingVideoInfo(videoInfo);
 
+      // Submit job to backend worker queue (with SSRF verification & rate limiting)
+      try {
+        await fetch('/api/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            videoUrl: url,
+            videoInfo,
+            contentGoal,
+            hookType,
+            preferredDuration,
+            userId: user.email,
+          }),
+        });
+      } catch (queueErr) {
+        console.warn('Queue submission note:', queueErr);
+      }
+
       const generatedClips = await analyzeVideoWithAI(
         videoInfo,
         contentGoal,
@@ -162,10 +185,12 @@ export default function App() {
       setActiveProjectId(newProject.id);
       setActiveClipId(generatedClips[0].id);
 
-      // Deduct minutes
+      // Deduct credits and minutes
+      const videoMins = Math.round(videoInfo.durationSeconds / 60);
       setUser((prev) => ({
         ...prev,
-        minutesUsed: Math.min(prev.minutesLimit, prev.minutesUsed + Math.round(videoInfo.durationSeconds / 60)),
+        credits: Math.max(0, prev.credits - (5 + videoMins)),
+        minutesUsed: Math.min(prev.minutesLimit, prev.minutesUsed + videoMins),
         clipsGenerated: prev.clipsGenerated + generatedClips.length,
       }));
 
@@ -284,6 +309,7 @@ export default function App() {
         user={user}
         onOpenSubscription={() => setIsSubscriptionOpen(true)}
         onOpenLegal={() => setIsLegalOpen(true)}
+        onOpenAuth={() => setIsAuthOpen(true)}
         hasActiveProject={Boolean(activeProject && activeProject.clips.length > 0)}
       />
 
@@ -312,6 +338,7 @@ export default function App() {
             onOpenSettings={() => setIsSettingsOpen(true)}
             onBatchExport={handleBatchExport}
             onOpenSocialModal={(c) => setSocialModalClip(c)}
+            onOpenSmartReframe={(c) => setActiveReframeClip(c)}
           />
         )}
 
@@ -363,7 +390,10 @@ export default function App() {
           />
         )}
 
-        {/* TAB 7: ADMIN DASHBOARD */}
+        {/* TAB 7: QUEUE & BACKGROUND WORKERS */}
+        {currentTab === 'queue' && <QueueDashboard />}
+
+        {/* TAB 8: ADMIN DASHBOARD */}
         {currentTab === 'admin' && <AdminDashboard />}
       </main>
 
@@ -377,6 +407,23 @@ export default function App() {
           onCancel={() => setIsProcessing(false)}
         />
       )}
+
+      {/* Smart Reframe Active Speaker Modal */}
+      {activeReframeClip && (
+        <SmartReframeModal
+          clip={activeReframeClip}
+          onClose={() => setActiveReframeClip(null)}
+          onApply={handleUpdateClip}
+        />
+      )}
+
+      {/* Authentication Modal */}
+      <AuthModal
+        isOpen={isAuthOpen}
+        onClose={() => setIsAuthOpen(false)}
+        currentUser={user}
+        onUserChange={(updatedUser) => setUser(updatedUser)}
+      />
 
       {/* Viral Settings Modal */}
       <ClipSettingsModal

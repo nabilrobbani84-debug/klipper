@@ -31,6 +31,7 @@ export const ExportModal: React.FC<ExportModalProps> = ({
   const [fps, setFps] = useState<number>(60);
   const [format, setFormat] = useState<'mp4' | 'mov'>('mp4');
   const [codec, setCodec] = useState<'h264' | 'h265'>('h264');
+  const [renderEngine, setRenderEngine] = useState<'server-ffmpeg' | 'client-canvas'>('server-ffmpeg');
 
   const [isExporting, setIsExporting] = useState(false);
   const [stage, setStage] = useState<'idle' | 'rendering' | 'encoding' | 'finalizing' | 'ready'>('idle');
@@ -43,6 +44,95 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     setStage('rendering');
 
     try {
+      if (renderEngine === 'server-ffmpeg') {
+        // Submit real FFmpeg render job to backend worker queue
+        setProgressMessage('Submitting render job to Server Worker Queue...');
+        setProgressPercent(10);
+
+        const res = await fetch('/api/jobs/render', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            clip,
+            resolution,
+            aspectRatio: clip.aspectRatio || '9:16',
+          }),
+        });
+
+        if (!res.ok) {
+          const errData = await res.json();
+          throw new Error(errData.error || 'Server render failed');
+        }
+
+        const { jobId } = await res.json();
+
+        // Poll job status
+        let pollCount = 0;
+        const pollInterval = setInterval(async () => {
+          pollCount++;
+          try {
+            const statusRes = await fetch(`/api/jobs/${jobId}`);
+            if (statusRes.ok) {
+              const { job } = await statusRes.json();
+              setProgressPercent(job.progressPercent || 20);
+              const lastLog = job.logs?.[job.logs.length - 1]?.message;
+              setProgressMessage(lastLog || `FFmpeg worker processing: ${job.currentStage}...`);
+
+              if (job.status === 'completed') {
+                clearInterval(pollInterval);
+                setStage('ready');
+                setProgressPercent(100);
+
+                const item: ExportRecord = {
+                  id: job.id,
+                  projectId: clip.id,
+                  clipId: clip.id,
+                  clipTitle: clip.title,
+                  projectName: clip.title,
+                  thumbnailUrl: job.resultData?.thumbnailUrl || clip.thumbnailUrl,
+                  resolution,
+                  fps,
+                  format,
+                  codec,
+                  duration: clip.duration,
+                  sizeMb: job.resultData?.fileSizeBytes
+                    ? Math.round((job.resultData.fileSizeBytes / (1024 * 1024)) * 10) / 10
+                    : 18.5,
+                  downloadUrl: job.resultData?.exportUrl || clip.videoUrl,
+                  createdAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) + ', Today',
+                  status: 'ready',
+                };
+
+                setExportedItem(item);
+                onExportSuccess(item);
+                setIsExporting(false);
+
+                confetti({
+                  particleCount: 85,
+                  spread: 75,
+                  origin: { y: 0.6 },
+                  colors: ['#a855f7', '#ec4899', '#38bdf8', '#10b981'],
+                });
+              } else if (job.status === 'failed') {
+                clearInterval(pollInterval);
+                setIsExporting(false);
+                alert(`Render job error: ${job.error || 'Unknown worker error'}`);
+              }
+            }
+          } catch (e) {
+            console.warn('Poll error:', e);
+          }
+
+          if (pollCount > 60) {
+            clearInterval(pollInterval);
+            setIsExporting(false);
+          }
+        }, 1000);
+
+        return;
+      }
+
+      // Fast Client Canvas Render
       const item = await renderAndExportClip(
         clip,
         resolution,
@@ -66,9 +156,10 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         origin: { y: 0.6 },
         colors: ['#a855f7', '#ec4899', '#38bdf8', '#facc15'],
       });
-    } catch (err) {
+      setIsExporting(false);
+    } catch (err: any) {
       console.error('Export failed', err);
-    } finally {
+      alert(err.message || 'Export error');
       setIsExporting(false);
     }
   };
@@ -132,6 +223,51 @@ export const ExportModal: React.FC<ExportModalProps> = ({
         {/* When NOT exporting and NOT ready: Configuration Selectors */}
         {!isExporting && stage !== 'ready' && (
           <div className="space-y-4 mb-6">
+            {/* Render Engine Toggle */}
+            <div>
+              <label className="text-[11px] font-bold text-slate-300 block mb-2 flex items-center justify-between">
+                <span>Rendering Pipeline Engine</span>
+                <span className="text-[10px] text-purple-300 font-mono">Backend Worker vs Browser</span>
+              </label>
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => setRenderEngine('server-ffmpeg')}
+                  className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                    renderEngine === 'server-ffmpeg'
+                      ? 'bg-purple-600/20 border-purple-500 text-white shadow-md'
+                      : 'bg-white/[0.02] border-white/5 text-slate-400 hover:border-white/20'
+                  }`}
+                >
+                  <div className="font-bold text-xs flex items-center gap-1.5 mb-1 text-purple-200">
+                    <Cpu className="w-3.5 h-3.5 text-emerald-400" />
+                    <span>Server FFmpeg (Recommended)</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-tight">
+                    -14 LUFS loudnorm audio, 9:16 smart reframe crop, burn-in captions, uploaded to Object Storage
+                  </p>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setRenderEngine('client-canvas')}
+                  className={`p-3 rounded-2xl border text-left transition-all cursor-pointer ${
+                    renderEngine === 'client-canvas'
+                      ? 'bg-purple-600/20 border-purple-500 text-white shadow-md'
+                      : 'bg-white/[0.02] border-white/5 text-slate-400 hover:border-white/20'
+                  }`}
+                >
+                  <div className="font-bold text-xs flex items-center gap-1.5 mb-1 text-slate-200">
+                    <Sparkles className="w-3.5 h-3.5 text-pink-400" />
+                    <span>Client Fast Canvas</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 leading-tight">
+                    Instant in-browser frame capture for quick local testing without server queue
+                  </p>
+                </button>
+              </div>
+            </div>
+
             {/* Resolution */}
             <div>
               <label className="text-[11px] font-bold text-slate-300 block mb-2">
