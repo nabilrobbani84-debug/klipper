@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Navbar } from './components/Navbar';
 import { LandingPage } from './components/LandingPage';
 import { ProcessingModal } from './components/ProcessingModal';
@@ -9,403 +9,340 @@ import { SocialPackModal } from './components/SocialPackModal';
 import { ExportModal } from './components/ExportModal';
 import { DownloadCenter } from './components/DownloadCenter';
 import { ProjectsDashboard } from './components/ProjectsDashboard';
+import { QueueDashboard } from './components/QueueDashboard';
 import { TemplatesGallery } from './components/TemplatesGallery';
 import { SubscriptionModal } from './components/SubscriptionModal';
 import { AdminDashboard } from './components/AdminDashboard';
+import { AuthModal } from './components/AuthModal';
 import { LegalNoticeModal } from './components/LegalNoticeModal';
+import { Loader2 } from 'lucide-react';
 
 import {
-  Project,
+  AspectRatio,
   ClipCandidate,
-  YouTubeVideoInfo,
-  ExportRecord,
-  UserAccount,
   ContentGoal,
-  HookType,
   EditingPreset,
   CaptionPreset,
-  AspectRatio,
+  HookType,
+  Project,
+  UserAccount,
 } from './types';
 
-import { SAMPLE_VIDEOS, generateSampleClips } from './data/sampleVideos';
-import { fetchVideoMetadata, analyzeVideoWithAI } from './services/aiClipService';
 import {
+  ApiError,
   cancelBackendJob,
+  clipToEditorPatch,
   createAnalysisJob,
+  deleteBackendProject,
+  duplicateBackendProject,
+  fetchCurrentUser,
+  fetchPublicConfig,
+  fetchUsage,
   getBackendProject,
-  isBackendConfigured,
+  getSessionToken,
+  listBackendProjects,
+  logout as apiLogout,
   mapBackendProject,
+  mapSessionToAccount,
+  patchClip,
+  renameBackendProject,
   watchBackendJob,
 } from './services/apiClient';
 
+type Tab = 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'queue' | 'admin';
+const STAGE_INDEX: Record<string, number> = {
+  QUEUED: 0, DOWNLOADING: 1, EXTRACTING_AUDIO: 2, TRANSCRIBING: 3, ANALYZING: 4,
+  GENERATING_CLIPS: 5, REFRAMING: 6, GENERATING_CAPTIONS: 7, RENDERING: 8, UPLOADING: 8, COMPLETED: 8,
+};
+
 export default function App() {
-  // Navigation State
-  const [currentTab, setCurrentTab] = useState<
-    'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'admin'
-  >('landing');
+  const [currentTab, setCurrentTab] = useState<Tab>('landing');
+  const [bootstrapping, setBootstrapping] = useState(true);
+  const [user, setUser] = useState<UserAccount | null>(null);
+  const [registrationOpen, setRegistrationOpen] = useState(true);
+  const [authModal, setAuthModal] = useState<null | 'login' | 'register'>(null);
+  const authResume = useRef<(() => void) | null>(null);
 
-  // User Account State
-  const [user, setUser] = useState<UserAccount>({
-    name: 'Alex Vance',
-    email: 'creator@clipforge.ai',
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-    plan: 'creator',
-    credits: 120,
-    minutesUsed: 42,
-    minutesLimit: 180,
-    clipsGenerated: 28,
-    storageMbUsed: 215,
-    storageMbLimit: 1000,
-  });
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+  const [activeClipId, setActiveClipId] = useState<string>('');
+  const activeClip = activeProject?.clips.find((c) => c.id === activeClipId) ?? activeProject?.clips[0] ?? null;
 
-  // Projects & Active Clip State
-  const [projects, setProjects] = useState<Project[]>(() => {
-    // Initialize with a rich pre-loaded project
-    const defaultVideo = SAMPLE_VIDEOS[0];
-    const initialClips = generateSampleClips(defaultVideo);
-    return [
-      {
-        id: `proj-${defaultVideo.id}`,
-        name: defaultVideo.title,
-        videoInfo: defaultVideo,
-        clips: initialClips,
-        createdAt: 'Today, 10:15 AM',
-        lastEdited: 'Just now',
-        status: 'ready',
-        contentGoal: 'retention',
-        hookType: 'curiosity',
-        preferredDuration: 45,
-      },
-    ];
-  });
-
-  const [activeProjectId, setActiveProjectId] = useState<string>(projects[0].id);
-  const activeProject = projects.find((p) => p.id === activeProjectId) || projects[0];
-
-  const [activeClipId, setActiveClipId] = useState<string>(
-    activeProject?.clips[0]?.id || ''
-  );
-  const activeClip =
-    activeProject?.clips.find((c) => c.id === activeClipId) || activeProject?.clips[0];
-
-  // Processing State
   const [isProcessing, setIsProcessing] = useState(false);
-  const [processingVideoInfo, setProcessingVideoInfo] = useState<YouTubeVideoInfo | null>(null);
+  const [processingProject, setProcessingProject] = useState<Project | null>(null);
   const [processingStepIndex, setProcessingStepIndex] = useState(0);
   const [processingProgress, setProcessingProgress] = useState(0);
   const [processingLog, setProcessingLog] = useState('');
   const [processingJobId, setProcessingJobId] = useState<string | null>(null);
+  const processingAbort = useRef<AbortController | null>(null);
 
-  // Viral AI Settings State
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [contentGoal, setContentGoal] = useState<ContentGoal>('retention');
   const [hookType, setHookType] = useState<HookType>('curiosity');
-  const [preferredDuration, setPreferredDuration] = useState<number>(45);
+  const [preferredDuration, setPreferredDuration] = useState(45);
+  const [requestedClipCount, setRequestedClipCount] = useState(3);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>('9:16');
   const [editingPreset, setEditingPreset] = useState<EditingPreset>('dynamic-mrbeast');
 
-  // Modals State
   const [isSubscriptionOpen, setIsSubscriptionOpen] = useState(false);
   const [isLegalOpen, setIsLegalOpen] = useState(false);
   const [socialModalClip, setSocialModalClip] = useState<ClipCandidate | null>(null);
   const [exportModalClip, setExportModalClip] = useState<ClipCandidate | null>(null);
+  const [toast, setToast] = useState<{ kind: 'error' | 'success'; message: string } | null>(null);
 
-  // Export Records
-  const [exports, setExports] = useState<ExportRecord[]>([
-    {
-      id: 'export-initial-1',
-      projectId: projects[0].id,
-      clipId: projects[0].clips[0].id,
-      clipTitle: projects[0].clips[0].title,
-      projectName: projects[0].name,
-      thumbnailUrl: projects[0].clips[0].thumbnailUrl,
-      resolution: '1080p',
-      fps: 60,
-      format: 'mp4',
-      codec: 'h264',
-      duration: projects[0].clips[0].duration,
-      sizeMb: 24.8,
-      downloadUrl: projects[0].clips[0].videoUrl,
-      createdAt: '10:30 AM, Today',
-      status: 'ready',
-    },
-  ]);
+  const notify = useCallback((kind: 'error' | 'success', message: string) => {
+    setToast({ kind, message });
+    window.setTimeout(() => setToast(null), 5000);
+  }, []);
 
-  // Handler: Start Analysis from URL
-  const handleStartAnalysis = async (url: string) => {
-    setIsProcessing(true);
-    setProcessingStepIndex(0);
-    setProcessingProgress(5);
-    setProcessingLog('Parsing URL and verifying access rights...');
-
+  const refreshUsage = useCallback(async () => {
     try {
-      if (isBackendConfigured()) {
-        const queued = await createAnalysisJob({
-          youtubeUrl: url,
-          contentGoal,
-          hookType,
-          preferredDuration,
-          aspectRatio,
-          requestedClipCount: 3,
-        });
-        setProcessingJobId(queued.jobId);
-        setProcessingLog('Job queued. The worker will continue even if this browser tab is closed.');
-        const finished = await watchBackendJob(queued.jobId, (job) => {
-          const stageIndex: Record<string, number> = {
-            QUEUED: 0,
-            DOWNLOADING: 1,
-            EXTRACTING_AUDIO: 2,
-            TRANSCRIBING: 3,
-            ANALYZING: 4,
-            GENERATING_CLIPS: 5,
-            REFRAMING: 6,
-            GENERATING_CAPTIONS: 7,
-            RENDERING: 8,
-            COMPLETED: 8,
-          };
-          setProcessingStepIndex(stageIndex[job.state] ?? 0);
-          setProcessingProgress(job.progress);
-          setProcessingLog(job.message);
-        });
-        if (finished.state !== 'COMPLETED') {
-          throw new Error(finished.message || 'Video processing did not complete.');
+      const usage = await fetchUsage();
+      setUser((prev) => (prev ? { ...prev, credits: usage.creditsRemaining, minutesUsed: usage.creditsUsed, minutesLimit: usage.plan.monthlyCredits, storageMbUsed: Math.round(usage.storageBytes / 1_000_000), storageMbLimit: Math.round(usage.plan.storageLimitBytes / 1_000_000) } : prev));
+    } catch { /* non-fatal */ }
+  }, []);
+
+  const loadProjects = useCallback(async () => {
+    try {
+      const backend = await listBackendProjects();
+      setProjects(backend.map(mapBackendProject));
+    } catch (error) {
+      if (error instanceof ApiError && error.status !== 401) notify('error', error.message);
+    }
+  }, [notify]);
+
+  // Bootstrap: restore session (token or dev auth), load config + projects.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const config = await fetchPublicConfig().catch(() => null);
+        if (!cancelled && config) setRegistrationOpen(config.registrationOpen);
+        const hasDevAuth = Boolean(import.meta.env.DEV && import.meta.env.VITE_DEV_USER_ID);
+        if (getSessionToken() || hasDevAuth) {
+          const me = await fetchCurrentUser();
+          if (cancelled) return;
+          setUser(mapSessionToAccount(me));
+          await loadProjects();
         }
-        const backendProject = await getBackendProject(queued.projectId);
-        const newProject = mapBackendProject(backendProject);
-        if (newProject.clips.length === 0) throw new Error('The analysis completed without returning clip candidates.');
-        setProcessingVideoInfo(newProject.videoInfo);
-        setProjects((prev) => [newProject, ...prev]);
-        setActiveProjectId(newProject.id);
-        setActiveClipId(newProject.clips[0].id);
-        setUser((prev) => ({
-          ...prev,
-          minutesUsed: Math.min(prev.minutesLimit, prev.minutesUsed + Math.round(newProject.videoInfo.durationSeconds / 60)),
-          clipsGenerated: prev.clipsGenerated + newProject.clips.length,
-        }));
-        setCurrentTab('clips');
-        return;
+      } catch {
+        /* not signed in */
+      } finally {
+        if (!cancelled) setBootstrapping(false);
       }
+    })();
+    return () => { cancelled = true; };
+  }, [loadProjects]);
 
-      const videoInfo = await fetchVideoMetadata(url);
-      setProcessingVideoInfo(videoInfo);
+  const requireAuth = useCallback((action: () => void) => {
+    if (user) { action(); return; }
+    authResume.current = action;
+    setAuthModal('login');
+  }, [user]);
 
-      const generatedClips = await analyzeVideoWithAI(
-        videoInfo,
-        contentGoal,
-        hookType,
-        preferredDuration,
-        (stepIdx, stepName, pct, logMsg) => {
-          setProcessingStepIndex(stepIdx);
-          setProcessingProgress(pct);
-          setProcessingLog(logMsg);
-        }
-      );
+  const handleAuthenticated = useCallback(async () => {
+    try {
+      const me = await fetchCurrentUser();
+      setUser(mapSessionToAccount(me));
+      await loadProjects();
+      const resume = authResume.current;
+      authResume.current = null;
+      resume?.();
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not load your account.');
+    }
+  }, [loadProjects, notify]);
 
-      const newProject: Project = {
-        id: `proj-${Date.now()}`,
-        name: videoInfo.title,
-        videoInfo,
-        clips: generatedClips,
-        createdAt: 'Just now',
-        lastEdited: 'Just now',
-        status: 'ready',
-        contentGoal,
-        hookType,
-        preferredDuration,
-      };
+  const handleLogout = useCallback(async () => {
+    await apiLogout().catch(() => undefined);
+    setUser(null);
+    setProjects([]);
+    setActiveProjectId(null);
+    setCurrentTab('landing');
+    notify('success', 'Signed out.');
+  }, [notify]);
 
-      setProjects((prev) => [newProject, ...prev]);
-      setActiveProjectId(newProject.id);
-      setActiveClipId(generatedClips[0].id);
-
-      // Deduct minutes
-      setUser((prev) => ({
-        ...prev,
-        minutesUsed: Math.min(prev.minutesLimit, prev.minutesUsed + Math.round(videoInfo.durationSeconds / 60)),
-        clipsGenerated: prev.clipsGenerated + generatedClips.length,
-      }));
-
-      // Navigate to clips list
+  const startAnalysis = useCallback(async (url: string) => {
+    const abort = new AbortController();
+    processingAbort.current = abort;
+    setIsProcessing(true);
+    setProcessingProject(null);
+    setProcessingStepIndex(0);
+    setProcessingProgress(3);
+    setProcessingLog('Validating URL and queuing the job…');
+    setProcessingJobId(null);
+    try {
+      const queued = await createAnalysisJob({ youtubeUrl: url, contentGoal, hookType, preferredDuration, aspectRatio, requestedClipCount });
+      setProcessingJobId(queued.jobId);
+      setProcessingLog('Job queued. Processing continues even if you close this tab.');
+      const finished = await watchBackendJob(queued.jobId, (job) => {
+        setProcessingStepIndex(STAGE_INDEX[job.state] ?? 0);
+        setProcessingProgress(job.progress);
+        setProcessingLog(job.message);
+      }, abort.signal);
+      if (finished.state === 'CANCELLED') { notify('error', 'Processing cancelled.'); return; }
+      if (finished.state !== 'COMPLETED') throw new Error(finished.message || 'Video processing failed.');
+      const project = mapBackendProject(await getBackendProject(queued.projectId));
+      if (project.clips.length === 0) throw new Error('No clip candidates were produced for this video.');
+      setProjects((prev) => [project, ...prev.filter((p) => p.id !== project.id)]);
+      setActiveProjectId(project.id);
+      setActiveClipId(project.clips[0].id);
+      setProcessingProject(project);
+      void refreshUsage();
       setCurrentTab('clips');
-    } catch (err: any) {
-      alert(err.message || 'An error occurred while analyzing the YouTube video.');
+      notify('success', `${project.clips.length} clips are ready.`);
+    } catch (error) {
+      if (abort.signal.aborted) return;
+      notify('error', error instanceof Error ? error.message : 'Analysis failed.');
     } finally {
+      if (processingAbort.current === abort) processingAbort.current = null;
       setIsProcessing(false);
       setProcessingJobId(null);
-      setProcessingVideoInfo(null);
     }
-  };
+  }, [aspectRatio, contentGoal, hookType, notify, preferredDuration, refreshUsage, requestedClipCount]);
 
-  const handleCancelProcessing = async () => {
-    if (processingJobId) {
-      try {
-        await cancelBackendJob(processingJobId);
-      } catch (error) {
-        alert(error instanceof Error ? error.message : 'The processing job could not be cancelled.');
-      }
-    }
+  const handleStartAnalysis = useCallback((url: string) => requireAuth(() => void startAnalysis(url)), [requireAuth, startAnalysis]);
+
+  const handleCancelProcessing = useCallback(async () => {
+    const jobId = processingJobId;
+    processingAbort.current?.abort();
     setIsProcessing(false);
-  };
+    if (jobId) await cancelBackendJob(jobId).catch(() => undefined);
+  }, [processingJobId]);
 
-  // Handler: Quick Sample Select
-  const handleSelectSample = (sample: YouTubeVideoInfo) => {
-    handleStartAnalysis(sample.url);
-  };
+  // Persist clip edits to the backend (debounced per clip) so renders use the saved settings.
+  const saveTimers = useRef<Record<string, number>>({});
+  const handleUpdateClip = useCallback((updated: ClipCandidate) => {
+    if (!activeProjectId) return;
+    setProjects((prev) => prev.map((p) => (p.id === activeProjectId ? { ...p, lastEdited: 'Just now', clips: p.clips.map((c) => (c.id === updated.id ? updated : c)) } : p)));
+    window.clearTimeout(saveTimers.current[updated.id]);
+    saveTimers.current[updated.id] = window.setTimeout(() => {
+      patchClip(activeProjectId, updated.id, { title: updated.title, editor: clipToEditorPatch(updated) }).catch((error) => notify('error', error instanceof Error ? error.message : 'Could not save edits.'));
+    }, 700);
+  }, [activeProjectId, notify]);
 
-  // Handler: Update Clip in active project
-  const handleUpdateClip = (updated: ClipCandidate) => {
-    setProjects((prev) =>
-      prev.map((p) => {
-        if (p.id !== activeProjectId) return p;
-        return {
-          ...p,
-          lastEdited: 'Just now',
-          clips: p.clips.map((c) => (c.id === updated.id ? updated : c)),
-        };
+  const handleTrimClip = useCallback((clip: ClipCandidate, start: number, end: number) => {
+    if (!activeProjectId) return;
+    patchClip(activeProjectId, clip.id, { start, end })
+      .then((updated) => {
+        setProjects((prev) => prev.map((p) => (p.id === activeProjectId ? { ...p, clips: p.clips.map((c) => (c.id === clip.id ? { ...c, startTime: updated.start, endTime: updated.end, duration: updated.duration } : c)) } : p)));
+        notify('success', 'Clip range updated.');
       })
-    );
-  };
+      .catch((error) => notify('error', error instanceof Error ? error.message : 'Could not update clip.'));
+  }, [activeProjectId, notify]);
 
-  // Handler: Duplicate Project
-  const handleDuplicateProject = (p: Project) => {
-    const dup: Project = {
-      ...p,
-      id: `proj-${Date.now()}`,
-      name: `${p.name} (Copy)`,
-      createdAt: 'Just now',
-      lastEdited: 'Just now',
-    };
-    setProjects((prev) => [dup, ...prev]);
-  };
-
-  // Handler: Delete Project
-  const handleDeleteProject = (projectId: string) => {
-    setProjects((prev) => prev.filter((p) => p.id !== projectId));
-    if (activeProjectId === projectId) {
-      const remaining = projects.filter((p) => p.id !== projectId);
-      if (remaining.length > 0) {
-        setActiveProjectId(remaining[0].id);
-        setActiveClipId(remaining[0].clips[0]?.id || '');
-      }
+  const handleDuplicateProject = useCallback(async (project: Project) => {
+    try {
+      const copy = mapBackendProject(await duplicateBackendProject(project.id));
+      setProjects((prev) => [copy, ...prev]);
+      notify('success', 'Project duplicated.');
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not duplicate project.');
     }
-  };
+  }, [notify]);
 
-  // Handler: Rename Project
-  const handleRenameProject = (projectId: string, newName: string) => {
-    setProjects((prev) =>
-      prev.map((p) => (p.id === projectId ? { ...p, name: newName } : p))
-    );
-  };
-
-  // Handler: Apply template to active clip
-  const handleApplyTemplate = (
-    editingPreset: EditingPreset,
-    captionPreset: CaptionPreset,
-    color: string
-  ) => {
-    if (activeClip) {
-      const updated: ClipCandidate = {
-        ...activeClip,
-        editingPreset,
-        captions: {
-          ...activeClip.captions,
-          preset: captionPreset,
-          highlightColor: color,
-        },
-      };
-      handleUpdateClip(updated);
-      setCurrentTab('studio');
+  const handleDeleteProject = useCallback(async (projectId: string) => {
+    try {
+      await deleteBackendProject(projectId);
+      setProjects((prev) => prev.filter((p) => p.id !== projectId));
+      if (activeProjectId === projectId) { setActiveProjectId(null); setCurrentTab('projects'); }
+      void refreshUsage();
+      notify('success', 'Project deleted.');
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not delete project.');
     }
-  };
+  }, [activeProjectId, notify, refreshUsage]);
 
-  // Handler: Batch Export
-  const handleBatchExport = (selectedClips: ClipCandidate[]) => {
-    if (selectedClips.length === 0) return;
-    const newExports: ExportRecord[] = selectedClips.map((c) => ({
-      id: `export-${Date.now()}-${c.id}`,
-      projectId: activeProject.id,
-      clipId: c.id,
-      clipTitle: c.title,
-      projectName: activeProject.name,
-      thumbnailUrl: c.thumbnailUrl,
-      resolution: '1080p',
-      fps: 60,
-      format: 'mp4',
-      codec: 'h264',
-      duration: c.duration,
-      sizeMb: Math.round(c.duration * 0.7 * 10) / 10,
-      downloadUrl: c.videoUrl,
-      createdAt: 'Just now',
-      status: 'ready',
-    }));
+  const handleRenameProject = useCallback(async (projectId: string, newName: string) => {
+    setProjects((prev) => prev.map((p) => (p.id === projectId ? { ...p, name: newName } : p)));
+    try {
+      await renameBackendProject(projectId, newName);
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not rename project.');
+      void loadProjects();
+    }
+  }, [loadProjects, notify]);
 
-    setExports((prev) => [...newExports, ...prev]);
-    setCurrentTab('exports');
-  };
+  const handleApplyTemplate = useCallback((preset: EditingPreset, captionPreset: CaptionPreset, color: string) => {
+    if (!activeClip) { notify('error', 'Open a clip in the studio first.'); return; }
+    handleUpdateClip({ ...activeClip, editingPreset: preset, captions: { ...activeClip.captions, preset: captionPreset, highlightColor: color } });
+    setCurrentTab('studio');
+  }, [activeClip, handleUpdateClip, notify]);
+
+  const openProjectById = useCallback(async (projectId: string) => {
+    try {
+      const project = mapBackendProject(await getBackendProject(projectId));
+      setProjects((prev) => [project, ...prev.filter((p) => p.id !== project.id)]);
+      setActiveProjectId(project.id);
+      if (project.clips[0]) setActiveClipId(project.clips[0].id);
+      setCurrentTab('clips');
+    } catch (error) {
+      notify('error', error instanceof Error ? error.message : 'Could not open project.');
+    }
+  }, [notify]);
+
+  const hasActiveProject = Boolean(activeProject && activeProject.clips.length > 0);
+
+  if (bootstrapping) {
+    return (
+      <div className="min-h-screen bg-[#08090E] text-slate-100 flex items-center justify-center">
+        <Loader2 className="w-6 h-6 animate-spin text-purple-400" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-[#08090E] text-slate-100 flex flex-col font-sans">
-      {/* Top Navigation */}
       <Navbar
         currentTab={currentTab}
-        setCurrentTab={setCurrentTab}
+        setCurrentTab={(tab) => {
+          if (tab !== 'landing' && !user) { setAuthModal('login'); return; }
+          setCurrentTab(tab);
+        }}
         user={user}
-        onOpenSubscription={() => setIsSubscriptionOpen(true)}
+        isAdmin={user?.role === 'admin'}
+        onOpenSubscription={() => (user ? setIsSubscriptionOpen(true) : setAuthModal('login'))}
         onOpenLegal={() => setIsLegalOpen(true)}
-        hasActiveProject={Boolean(activeProject && activeProject.clips.length > 0)}
+        onSignIn={() => setAuthModal('login')}
+        onSignOut={handleLogout}
+        hasActiveProject={hasActiveProject}
       />
 
-      {/* Main Content Area */}
       <main className="flex-1 flex flex-col">
-        {/* TAB 1: LANDING PAGE */}
         {currentTab === 'landing' && (
-          <LandingPage
-            onStartAnalysis={handleStartAnalysis}
-            onSelectSample={handleSelectSample}
-            isProcessing={isProcessing}
-            onOpenLegal={() => setIsLegalOpen(true)}
-            onOpenSettings={() => setIsSettingsOpen(true)}
-          />
+          <LandingPage onStartAnalysis={handleStartAnalysis} onSelectSample={(video) => handleStartAnalysis(video.url)} isProcessing={isProcessing} onOpenLegal={() => setIsLegalOpen(true)} onOpenSettings={() => setIsSettingsOpen(true)} />
         )}
 
-        {/* TAB 2: AI CLIPS CANDIDATES */}
         {currentTab === 'clips' && activeProject && (
           <ClipCandidateList
             project={activeProject}
-            onSelectClipForStudio={(c) => {
-              setActiveClipId(c.id);
-              setCurrentTab('studio');
-            }}
+            onSelectClipForStudio={(c) => { setActiveClipId(c.id); setCurrentTab('studio'); }}
             onQuickExport={(c) => setExportModalClip(c)}
             onOpenSettings={() => setIsSettingsOpen(true)}
-            onBatchExport={handleBatchExport}
+            onBatchExport={(clips) => { if (clips[0]) setExportModalClip(clips[0]); setCurrentTab('clips'); }}
             onOpenSocialModal={(c) => setSocialModalClip(c)}
           />
         )}
 
-        {/* TAB 3: VIDEO STUDIO EDITOR */}
-        {currentTab === 'studio' && activeClip && (
+        {currentTab === 'studio' && activeClip && activeProject && (
           <VideoStudio
             clip={activeClip}
-            allClips={activeProject?.clips || []}
+            allClips={activeProject.clips}
             onSelectClip={(c) => setActiveClipId(c.id)}
             onUpdateClip={handleUpdateClip}
+            onTrimClip={handleTrimClip}
             onExport={(c) => setExportModalClip(c)}
             onOpenSocial={(c) => setSocialModalClip(c)}
             onBackToClips={() => setCurrentTab('clips')}
           />
         )}
 
-        {/* TAB 4: MY PROJECTS */}
         {currentTab === 'projects' && (
           <ProjectsDashboard
             projects={projects}
             activeProjectId={activeProjectId}
-            onOpenProject={(p) => {
-              setActiveProjectId(p.id);
-              if (p.clips.length > 0) setActiveClipId(p.clips[0].id);
-              setCurrentTab('clips');
-            }}
+            onOpenProject={(p) => void openProjectById(p.id)}
             onDuplicateProject={handleDuplicateProject}
             onDeleteProject={handleDeleteProject}
             onRenameProject={handleRenameProject}
@@ -413,32 +350,24 @@ export default function App() {
           />
         )}
 
-        {/* TAB 5: TEMPLATES GALLERY */}
+        {currentTab === 'queue' && (
+          <QueueDashboard onOpenProject={(id) => void openProjectById(id)} onNavigateLanding={() => setCurrentTab('landing')} />
+        )}
+
         {currentTab === 'templates' && (
-          <TemplatesGallery
-            onSelectTemplate={handleApplyTemplate}
-            hasActiveClip={Boolean(activeClip)}
-            onNavigateLanding={() => setCurrentTab('landing')}
-          />
+          <TemplatesGallery onSelectTemplate={handleApplyTemplate} hasActiveClip={Boolean(activeClip)} onNavigateLanding={() => setCurrentTab('landing')} />
         )}
 
-        {/* TAB 6: EXPORT CENTER / DOWNLOADS */}
         {currentTab === 'exports' && (
-          <DownloadCenter
-            exports={exports}
-            onDeleteExport={(id) => setExports((prev) => prev.filter((e) => e.id !== id))}
-            onNavigateLanding={() => setCurrentTab('landing')}
-          />
+          <DownloadCenter onNavigateLanding={() => setCurrentTab('landing')} onError={(message) => notify('error', message)} />
         )}
 
-        {/* TAB 7: ADMIN DASHBOARD */}
-        {currentTab === 'admin' && <AdminDashboard />}
+        {currentTab === 'admin' && user?.role === 'admin' && <AdminDashboard onError={(message) => notify('error', message)} />}
       </main>
 
-      {/* Processing Modal when AI analysis is running */}
       {isProcessing && (
         <ProcessingModal
-          videoInfo={processingVideoInfo}
+          videoInfo={processingProject?.videoInfo ?? null}
           currentStepIndex={processingStepIndex}
           progressPercent={processingProgress}
           currentLog={processingLog}
@@ -446,55 +375,50 @@ export default function App() {
         />
       )}
 
-      {/* Viral Settings Modal */}
       <ClipSettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
-        contentGoal={contentGoal}
-        setContentGoal={setContentGoal}
-        hookType={hookType}
-        setHookType={setHookType}
-        preferredDuration={preferredDuration}
-        setPreferredDuration={setPreferredDuration}
-        aspectRatio={aspectRatio}
-        setAspectRatio={setAspectRatio}
-        editingPreset={editingPreset}
-        setEditingPreset={setEditingPreset}
-        onApplyAndRegenerate={() => {
-          if (activeProject) {
-            handleStartAnalysis(activeProject.videoInfo.url);
-          }
-        }}
+        contentGoal={contentGoal} setContentGoal={setContentGoal}
+        hookType={hookType} setHookType={setHookType}
+        preferredDuration={preferredDuration} setPreferredDuration={setPreferredDuration}
+        aspectRatio={aspectRatio} setAspectRatio={setAspectRatio}
+        editingPreset={editingPreset} setEditingPreset={setEditingPreset}
+        requestedClipCount={requestedClipCount} setRequestedClipCount={setRequestedClipCount}
+        onApplyAndRegenerate={() => { if (activeProject) handleStartAnalysis(activeProject.videoInfo.url); setIsSettingsOpen(false); }}
       />
 
-      {/* Social Media Copy Pack Modal */}
-      <SocialPackModal
-        clip={socialModalClip}
-        onClose={() => setSocialModalClip(null)}
+      <SocialPackModal clip={socialModalClip} onClose={() => setSocialModalClip(null)} />
+
+      {exportModalClip && activeProject && (
+        <ExportModal
+          clip={exportModalClip}
+          projectId={activeProject.id}
+          plan={user?.plan ?? 'free'}
+          onClose={() => setExportModalClip(null)}
+          onExported={() => { void refreshUsage(); notify('success', 'Export ready in the Exports tab.'); }}
+          onError={(message) => notify('error', message)}
+        />
+      )}
+
+      {user && (
+        <SubscriptionModal isOpen={isSubscriptionOpen} onClose={() => setIsSubscriptionOpen(false)} user={user} onUpdatePlan={() => notify('success', 'Plan changes are managed by an administrator in this build.')} />
+      )}
+
+      <LegalNoticeModal isOpen={isLegalOpen} onClose={() => setIsLegalOpen(false)} />
+
+      <AuthModal
+        isOpen={authModal !== null}
+        mode={authModal ?? 'login'}
+        registrationOpen={registrationOpen}
+        onClose={() => setAuthModal(null)}
+        onAuthenticated={handleAuthenticated}
       />
 
-      {/* Export & Render Modal */}
-      <ExportModal
-        clip={exportModalClip}
-        onClose={() => setExportModalClip(null)}
-        onExportSuccess={(rec) => {
-          setExports((prev) => [rec, ...prev]);
-        }}
-      />
-
-      {/* Subscription & Usage Modal */}
-      <SubscriptionModal
-        isOpen={isSubscriptionOpen}
-        onClose={() => setIsSubscriptionOpen(false)}
-        user={user}
-        onUpdatePlan={(p) => setUser((prev) => ({ ...prev, plan: p }))}
-      />
-
-      {/* Legal & Compliance Notice Modal */}
-      <LegalNoticeModal
-        isOpen={isLegalOpen}
-        onClose={() => setIsLegalOpen(false)}
-      />
+      {toast && (
+        <div className={`fixed bottom-5 left-1/2 -translate-x-1/2 z-[60] px-4 py-2.5 rounded-xl text-sm font-medium shadow-xl border ${toast.kind === 'error' ? 'bg-rose-950/90 border-rose-500/40 text-rose-200' : 'bg-emerald-950/90 border-emerald-500/40 text-emerald-200'}`} role="status">
+          {toast.message}
+        </div>
+      )}
     </div>
   );
 }

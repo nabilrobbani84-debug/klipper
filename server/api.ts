@@ -24,6 +24,7 @@ import { requestLogger } from './logger.js';
 import type { Metrics } from './metrics.js';
 import { capResolution, isPlanCode, PLAN_ENTITLEMENTS } from './plans.js';
 import type { ProcessingQueue } from './queue.js';
+import { FirebaseVerifier } from './services/firebaseAdmin.js';
 import { parseRangeHeader, type ObjectStorage } from './services/storage.js';
 import { parseYouTubeUrl } from './services/youtube.js';
 import { TERMINAL_JOB_STATES, type AnalysisJobPayload, type ClipEditorState, type ExportRecord, type JobRecord, type ProjectRecord, type QueuePayload, type RenderJobPayload } from './types.js';
@@ -113,6 +114,7 @@ export function createApp(deps: ApiDependencies): Express {
   const { config, repository, queue, storage, metrics } = deps;
   const app = express();
   const admins = adminEmails(config);
+  const firebase = new FirebaseVerifier(config);
   const publicBase = config.APP_URL.replace(/\/$/, '');
   const corsOrigins = config.CORS_ORIGIN.split(',').map((value) => value.trim()).filter(Boolean);
 
@@ -216,6 +218,7 @@ export function createApp(deps: ApiDependencies): Express {
       registrationOpen: config.ALLOW_REGISTRATION,
       plans: Object.values(PLAN_ENTITLEMENTS),
       billingEnabled: false,
+      googleAuth: firebase.enabled,
     });
   });
 
@@ -239,6 +242,15 @@ export function createApp(deps: ApiDependencies): Express {
       user.role = 'admin';
     }
     await repository.audit(user.id, 'auth.login', 'user', user.id, { ip: req.ip });
+    send(req, res, await issueSession(user));
+  }));
+  auth.post('/google', authLimiter, route(async (req, res) => {
+    const input = parse(z.object({ idToken: z.string().min(10).max(8192) }), req.body);
+    const verified = await firebase.verify(input.idToken);
+    if (!verified.emailVerified) throw new AppError('GOOGLE_EMAIL_UNVERIFIED', 'Your Google email is not verified.', 403);
+    const user = await repository.findOrCreateFederatedUser({ email: verified.email, role: admins.has(verified.email) ? 'admin' : 'user' });
+    if (user.suspended) throw new AppError('ACCOUNT_SUSPENDED', 'This account has been suspended. Contact support.', 403);
+    await repository.audit(user.id, 'auth.google', 'user', user.id, { ip: req.ip });
     send(req, res, await issueSession(user));
   }));
   app.use('/api/v1/auth', auth);
@@ -605,7 +617,7 @@ export function createApp(deps: ApiDependencies): Express {
     const stream = await storage.open(media.key, range ?? undefined);
     req.on('close', () => stream.destroy());
     stream.on('error', (error) => {
-      req.log.warn({ err: error }, 'media stream failed');
+      req.log?.warn({ err: error }, 'media stream failed');
       res.destroy();
     });
     stream.pipe(res);

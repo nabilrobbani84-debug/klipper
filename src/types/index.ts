@@ -142,6 +142,20 @@ export interface SocialMetadata {
   };
 }
 
+export interface SpeakerCutPoint {
+  timestamp: number;
+  speaker: 'Speaker A' | 'Speaker B' | 'Both' | 'Screen';
+  cropPanX: number; // percentage across the 16:9 frame
+  confidence: number;
+}
+
+export interface SmartReframeTrack {
+  mode: ReframingMode;
+  speakersDetected: number;
+  activeSpeakerSwitching: boolean;
+  cutPoints: SpeakerCutPoint[];
+}
+
 export interface ClipCandidate {
   id: string;
   title: string;
@@ -152,6 +166,7 @@ export interface ClipCandidate {
   hook: string;
   topic: string;
   emotion: string;
+  language?: 'id' | 'en' | 'auto';
   estimatedEngagement: string;
   viralityReason: string;
   clipStyle: ClipStyle;
@@ -161,6 +176,7 @@ export interface ClipCandidate {
   videoUrl: string;
   captions: CaptionConfig;
   reframing: ReframingConfig;
+  smartReframe?: SmartReframeTrack;
   audio: AudioConfig;
   transcript: TranscriptSentence[];
   bRolls: BRollItem[];
@@ -215,10 +231,12 @@ export interface ExportRecord {
 }
 
 export interface UserAccount {
+  id?: string;
   name: string;
   email: string;
   avatarUrl: string;
   plan: 'free' | 'creator' | 'pro';
+  role?: 'user' | 'admin';
   credits: number;
   minutesUsed: number;
   minutesLimit: number;

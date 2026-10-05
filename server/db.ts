@@ -165,6 +165,25 @@ export class Repository {
     return result.rows[0] ? mapUser(result.rows[0]) : null;
   }
 
+  /** Finds an existing user by email or provisions one (used by federated/Google sign-in). */
+  async findOrCreateFederatedUser(input: { email: string; role: UserRole }): Promise<UserRecord> {
+    const existing = await this.findUserByEmail(input.email);
+    if (existing) {
+      if (input.role === 'admin' && existing.role !== 'admin') {
+        await this.setUserRole(existing.id, 'admin');
+        existing.role = 'admin';
+      }
+      return existing;
+    }
+    const id = crypto.randomUUID();
+    return this.transaction(async (client) => {
+      await client.query(`INSERT INTO users (id, email, email_verified, role) VALUES ($1, $2, TRUE, $3)`, [id, input.email.toLowerCase(), input.role]);
+      await client.query(`INSERT INTO subscriptions (user_id, plan, status, period_start) VALUES ($1, 'FREE', 'active', NOW())`, [id]);
+      const result = await client.query(`SELECT u.*, s.plan FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id WHERE u.id = $1`, [id]);
+      return mapUser(result.rows[0]);
+    });
+  }
+
   async getUser(userId: string): Promise<UserRecord | null> {
     const result = await this.pool.query(`SELECT u.*, s.plan FROM users u LEFT JOIN subscriptions s ON s.user_id = u.id WHERE u.id = $1`, [userId]);
     return result.rows[0] ? mapUser(result.rows[0]) : null;

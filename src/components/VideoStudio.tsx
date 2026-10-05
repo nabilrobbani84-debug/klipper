@@ -46,12 +46,14 @@ import {
   BRollItem,
   BrandKit,
 } from '../types';
+import { SmartReframeModal } from './SmartReframeModal';
 
 interface VideoStudioProps {
   clip: ClipCandidate;
   allClips: ClipCandidate[];
   onSelectClip: (clip: ClipCandidate) => void;
   onUpdateClip: (updated: ClipCandidate) => void;
+  onTrimClip: (clip: ClipCandidate, start: number, end: number) => void;
   onExport: (clip: ClipCandidate) => void;
   onOpenSocial: (clip: ClipCandidate) => void;
   onBackToClips: () => void;
@@ -72,11 +74,13 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
   allClips,
   onSelectClip,
   onUpdateClip,
+  onTrimClip,
   onExport,
   onOpenSocial,
   onBackToClips,
 }) => {
   const [activeTab, setActiveTab] = useState<StudioTab>('captions');
+  const [reframeOpen, setReframeOpen] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(clip.startTime);
   const [playbackSpeed, setPlaybackSpeed] = useState(1);
@@ -142,7 +146,7 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
         togglePlay();
       } else if (e.code === 'KeyS') {
         e.preventDefault();
-        triggerSplitAtPlayhead();
+        trimStartToPlayhead();
       } else if (e.code === 'ArrowLeft') {
         e.preventDefault();
         handleSeek(currentTime - 2);
@@ -156,17 +160,28 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [currentTime, isPlaying]);
 
-  // AI Tool Actions
-  const runAiTool = (toolName: string, message: string) => {
-    setAiStatusMessage(`Running ${toolName}...`);
-    setTimeout(() => {
-      setAiStatusMessage(`✓ ${message}`);
-      setTimeout(() => setAiStatusMessage(null), 3000);
-    }, 900);
+  const flashStatus = (message: string) => {
+    setAiStatusMessage(message);
+    setTimeout(() => setAiStatusMessage(null), 3000);
   };
 
-  const triggerSplitAtPlayhead = () => {
-    runAiTool('Split Clip', `Split point created at ${currentTime.toFixed(1)}s`);
+  // Trim the clip start to the current playhead (persisted via onTrimClip -> backend PATCH).
+  const trimStartToPlayhead = () => {
+    if (currentTime <= clip.startTime + 0.5 || currentTime >= clip.endTime - 1) {
+      flashStatus('Move the playhead inside the clip to set a new start.');
+      return;
+    }
+    onTrimClip(clip, Number(currentTime.toFixed(2)), clip.endTime);
+    flashStatus(`New start set at ${currentTime.toFixed(1)}s`);
+  };
+
+  const trimEndToPlayhead = () => {
+    if (currentTime <= clip.startTime + 1 || currentTime >= clip.endTime - 0.5) {
+      flashStatus('Move the playhead inside the clip to set a new end.');
+      return;
+    }
+    onTrimClip(clip, clip.startTime, Number(currentTime.toFixed(2)));
+    flashStatus(`New end set at ${currentTime.toFixed(1)}s`);
   };
 
   // Helper for caption rendering
@@ -678,7 +693,7 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
                           highlightColor: tmpl.color,
                         },
                       });
-                      runAiTool('Template Apply', `Applied ${tmpl.name} template!`);
+                      flashStatus(`Applied ${tmpl.name} template`);
                     }}
                     className="w-full p-3 rounded-2xl bg-black/40 border border-white/5 hover:border-purple-400/40 text-left transition-all group"
                   >
@@ -736,15 +751,9 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
                   <p className="text-xs text-slate-400 italic">No B-rolls inserted yet.</p>
                 )}
 
-                <button
-                  onClick={() =>
-                    runAiTool('AI B-Roll Generator', 'Generated 2 new contextual cutaways!')
-                  }
-                  className="w-full py-2.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 border border-emerald-500/30 text-emerald-300 font-bold text-xs flex items-center justify-center gap-1.5 transition-all cursor-pointer"
-                >
-                  <Plus className="w-3.5 h-3.5" />
-                  <span>Generate New AI B-Roll</span>
-                </button>
+                <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 text-[11px] text-slate-400">
+                  Automatic B-roll insertion is on the roadmap and is not applied during render yet. Captions, auto-reframe, trimming and audio cleanup are fully active.
+                </div>
               </div>
             </div>
           )}
@@ -931,41 +940,36 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
             </div>
           )}
 
-          {/* TAB 7: AI MAGIC TOOLS */}
+          {/* TAB 7: TRIM & RANGE */}
           {activeTab === 'aitools' && (
             <div className="space-y-4">
               <div>
                 <h3 className="text-xs font-bold text-white uppercase tracking-wider mb-1 flex items-center gap-1.5">
                   <Wand2 className="w-4 h-4 text-purple-400" />
-                  1-Click AI Magic Tools
+                  Trim &amp; range
                 </h3>
                 <p className="text-[11px] text-slate-400">
-                  Instantly automate speech trimming and viral polish
+                  Set the clip in/out points. Changes are saved and applied on export.
                 </p>
               </div>
 
-              <div className="space-y-2">
-                {[
-                  { name: 'Remove Silence (> 0.4s)', desc: 'Cuts 1.2s dead air' },
-                  { name: 'Remove Filler Words', desc: 'Eliminates "uh", "um", "like"' },
-                  { name: 'Punchy Hook Booster', desc: 'Re-times first 3 seconds for maximum grip' },
-                  { name: 'Auto Dynamic Zoom', desc: 'Adds subtle micro-zooms on key points' },
-                  { name: 'Voice Loudness Boost', desc: 'Applies studio broadcast compression' },
-                ].map((tool, idx) => (
-                  <button
-                    key={idx}
-                    onClick={() => runAiTool(tool.name, `${tool.name} successfully applied!`)}
-                    className="w-full p-2.5 rounded-xl bg-black/40 border border-white/5 hover:border-purple-400/40 text-left transition-all flex items-center justify-between group cursor-pointer"
-                  >
-                    <div>
-                      <div className="text-xs font-bold text-white group-hover:text-purple-300">
-                        {tool.name}
-                      </div>
-                      <div className="text-[10px] text-slate-400">{tool.desc}</div>
-                    </div>
-                    <Zap className="w-3.5 h-3.5 text-purple-400 group-hover:scale-110 transition-transform" />
-                  </button>
-                ))}
+              <div className="p-3 rounded-xl bg-black/40 border border-white/5 space-y-2 text-xs text-slate-300">
+                <div className="flex items-center justify-between"><span>Start</span><span className="font-mono text-purple-300">{clip.startTime.toFixed(1)}s</span></div>
+                <div className="flex items-center justify-between"><span>End</span><span className="font-mono text-purple-300">{clip.endTime.toFixed(1)}s</span></div>
+                <div className="flex items-center justify-between"><span>Duration</span><span className="font-mono text-emerald-300">{(clip.endTime - clip.startTime).toFixed(1)}s</span></div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={trimStartToPlayhead} className="py-2.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-200 font-bold text-xs cursor-pointer">Set start to playhead</button>
+                <button onClick={trimEndToPlayhead} className="py-2.5 rounded-xl bg-purple-600/20 hover:bg-purple-600/30 border border-purple-500/30 text-purple-200 font-bold text-xs cursor-pointer">Set end to playhead</button>
+              </div>
+
+              <button onClick={() => setReframeOpen(true)} className="w-full py-2.5 rounded-xl bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/30 text-indigo-200 font-bold text-xs flex items-center justify-center gap-2 cursor-pointer">
+                <Smartphone className="w-3.5 h-3.5" /> Open auto-reframe
+              </button>
+
+              <div className="p-3 rounded-xl bg-white/[0.02] border border-white/5 text-[11px] text-slate-400">
+                Silence/filler removal is on the roadmap. Audio cleanup (noise reduction, loudness, compression) is applied from the Audio tab during render.
               </div>
             </div>
           )}
@@ -1165,7 +1169,7 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
             {/* Split, Speed & Volume */}
             <div className="flex items-center gap-3">
               <button
-                onClick={triggerSplitAtPlayhead}
+                onClick={trimStartToPlayhead}
                 className="px-2.5 py-1 rounded-lg bg-white/5 hover:bg-white/10 text-xs font-semibold text-slate-300 flex items-center gap-1.5 border border-white/10 transition-colors cursor-pointer"
                 title="Split clip at playhead (S)"
               >
@@ -1316,6 +1320,14 @@ export const VideoStudio: React.FC<VideoStudioProps> = ({
           </div>
         </div>
       </div>
+
+      {reframeOpen && (
+        <SmartReframeModal
+          clip={clip}
+          onClose={() => setReframeOpen(false)}
+          onApply={(updated) => onUpdateClip(updated)}
+        />
+      )}
     </div>
   );
 };

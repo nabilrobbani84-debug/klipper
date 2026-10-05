@@ -32,6 +32,8 @@ interface ClipSettingsModalProps {
   setAspectRatio: (ar: AspectRatio) => void;
   editingPreset: EditingPreset;
   setEditingPreset: (preset: EditingPreset) => void;
+  requestedClipCount?: number;
+  setRequestedClipCount?: (count: number) => void;
   onApplyAndRegenerate: () => void;
 }
 
@@ -48,6 +50,8 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
   setAspectRatio,
   editingPreset,
   setEditingPreset,
+  requestedClipCount = 3,
+  setRequestedClipCount,
   onApplyAndRegenerate,
 }) => {
   if (!isOpen) return null;
@@ -251,6 +255,32 @@ export const ClipSettingsModal: React.FC<ClipSettingsModalProps> = ({
               AI will align clip boundaries to natural speech sentences near this duration.
             </p>
           </div>
+
+          {/* Number of clips */}
+          {setRequestedClipCount && (
+            <div>
+              <div className="flex items-center gap-2 mb-3">
+                <Sparkles className="w-4 h-4 text-pink-400" />
+                <h3 className="text-sm font-bold text-white uppercase tracking-wider">Number of clips</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                {[1, 3, 5, 10].map((count) => (
+                  <button
+                    key={count}
+                    onClick={() => setRequestedClipCount(count)}
+                    className={`flex-1 py-2.5 rounded-xl font-bold text-xs border transition-all text-center ${
+                      requestedClipCount === count
+                        ? 'bg-pink-500/20 border-pink-400 text-pink-200 shadow-sm'
+                        : 'bg-white/[0.02] border-white/5 text-slate-400 hover:bg-white/5 hover:text-slate-200'
+                    }`}
+                  >
+                    {count}
+                  </button>
+                ))}
+              </div>
+              <p className="text-[11px] text-slate-400 mt-2">Higher plans allow more clips per video.</p>
+            </div>
+          )}
         </div>
 
         {/* Section 4: AI Editing Preset */}

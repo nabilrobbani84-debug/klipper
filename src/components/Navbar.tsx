@@ -6,20 +6,26 @@ import {
   FolderOpen,
   LayoutTemplate,
   Download,
-  ShieldAlert,
+  Activity,
   Zap,
-  User,
+  LogIn,
+  LogOut,
   Settings,
   ShieldCheck,
 } from 'lucide-react';
 import { UserAccount } from '../types';
 
+type Tab = 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'queue' | 'admin';
+
 interface NavbarProps {
-  currentTab: 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'admin';
-  setCurrentTab: (tab: 'landing' | 'clips' | 'studio' | 'projects' | 'templates' | 'exports' | 'admin') => void;
-  user: UserAccount;
+  currentTab: Tab;
+  setCurrentTab: (tab: Tab) => void;
+  user: UserAccount | null;
+  isAdmin: boolean;
   onOpenSubscription: () => void;
   onOpenLegal: () => void;
+  onSignIn: () => void;
+  onSignOut: () => void;
   hasActiveProject: boolean;
 }
 
@@ -27,8 +33,11 @@ export const Navbar: React.FC<NavbarProps> = ({
   currentTab,
   setCurrentTab,
   user,
+  isAdmin,
   onOpenSubscription,
   onOpenLegal,
+  onSignIn,
+  onSignOut,
   hasActiveProject,
 }) => {
   return (
@@ -98,53 +107,61 @@ export const Navbar: React.FC<NavbarProps> = ({
             </>
           )}
 
-          <button
-            onClick={() => setCurrentTab('projects')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              currentTab === 'projects'
-                ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <FolderOpen className="w-3.5 h-3.5" />
-            Projects
-          </button>
+          {user && (
+            <>
+              <button
+                onClick={() => setCurrentTab('projects')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  currentTab === 'projects' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <FolderOpen className="w-3.5 h-3.5" />
+                Projects
+              </button>
+
+              <button
+                onClick={() => setCurrentTab('queue')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  currentTab === 'queue' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Activity className="w-3.5 h-3.5" />
+                Queue
+              </button>
+
+              <button
+                onClick={() => setCurrentTab('exports')}
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                  currentTab === 'exports' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-white/5'
+                }`}
+              >
+                <Download className="w-3.5 h-3.5" />
+                Exports
+              </button>
+            </>
+          )}
 
           <button
             onClick={() => setCurrentTab('templates')}
             className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              currentTab === 'templates'
-                ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-white hover:bg-white/5'
+              currentTab === 'templates' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-white/5'
             }`}
           >
             <LayoutTemplate className="w-3.5 h-3.5" />
             Templates
           </button>
 
-          <button
-            onClick={() => setCurrentTab('exports')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              currentTab === 'exports'
-                ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Download className="w-3.5 h-3.5" />
-            Exports
-          </button>
-
-          <button
-            onClick={() => setCurrentTab('admin')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
-              currentTab === 'admin'
-                ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm'
-                : 'text-slate-400 hover:text-white hover:bg-white/5'
-            }`}
-          >
-            <Settings className="w-3.5 h-3.5" />
-            Admin
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setCurrentTab('admin')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
+                currentTab === 'admin' ? 'bg-purple-600/30 text-purple-200 border border-purple-500/40 shadow-sm' : 'text-slate-400 hover:text-white hover:bg-white/5'
+              }`}
+            >
+              <Settings className="w-3.5 h-3.5" />
+              Admin
+            </button>
+          )}
         </nav>
 
         {/* User Account & Actions */}
@@ -159,28 +176,35 @@ export const Navbar: React.FC<NavbarProps> = ({
             <span>Fair Use & Terms</span>
           </button>
 
-          {/* Credits meter */}
-          <button
-            onClick={onOpenSubscription}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-950/60 to-indigo-950/60 border border-purple-500/30 hover:border-purple-400/50 transition-all text-xs"
-          >
-            <Zap className="w-3.5 h-3.5 text-yellow-400 fill-yellow-400 animate-pulse" />
-            <span className="font-semibold text-slate-200">
-              {user.minutesLimit - user.minutesUsed}m left
-            </span>
-            <span className="px-1.5 py-0.2 rounded text-[10px] font-bold uppercase bg-purple-500/30 text-purple-200">
-              {user.plan}
-            </span>
-          </button>
+          {user ? (
+            <>
+              <button
+                onClick={onOpenSubscription}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gradient-to-r from-purple-950/60 to-indigo-950/60 border border-purple-500/30 hover:border-purple-400/50 transition-all text-xs cursor-pointer"
+                title="Credits remaining this month"
+              >
+                <Zap className="w-3.5 h-3.5 text-yellow-400 fill-yellow-400" />
+                <span className="font-semibold text-slate-200">{Math.max(0, user.credits)} credits</span>
+                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold uppercase bg-purple-500/30 text-purple-200">{user.plan}</span>
+              </button>
 
-          {/* Profile Avatar */}
-          <div
-            onClick={onOpenSubscription}
-            className="w-8 h-8 rounded-full ring-2 ring-purple-500/30 overflow-hidden cursor-pointer hover:ring-purple-400 transition-all"
-            title={`${user.name} (${user.email})`}
-          >
-            <img src={user.avatarUrl} alt={user.name} className="w-full h-full object-cover" />
-          </div>
+              <div className="w-8 h-8 rounded-full ring-2 ring-purple-500/30 overflow-hidden" title={user.email}>
+                <img src={user.avatarUrl} alt="" className="w-full h-full object-cover" />
+              </div>
+
+              <button onClick={onSignOut} title="Sign out" className="hidden sm:flex items-center justify-center w-8 h-8 rounded-lg text-slate-400 hover:text-white hover:bg-white/5 transition-colors cursor-pointer">
+                <LogOut className="w-4 h-4" />
+              </button>
+            </>
+          ) : (
+            <button
+              onClick={onSignIn}
+              className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-gradient-to-r from-purple-600 to-pink-600 hover:from-purple-500 hover:to-pink-500 text-white font-bold text-xs transition-all cursor-pointer"
+            >
+              <LogIn className="w-3.5 h-3.5" />
+              Sign in
+            </button>
+          )}
         </div>
       </div>
     </header>
