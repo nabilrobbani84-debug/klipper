@@ -77,7 +77,7 @@ export const LandingPage: React.FC<LandingPageProps> = ({
         <div className="flex justify-center mb-6">
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-purple-500/10 border border-purple-500/25 text-purple-300 text-xs font-medium shadow-inner backdrop-blur-md">
             <span className="flex h-2 w-2 rounded-full bg-emerald-400 animate-ping" />
-            <span>Klipper AI — Gemini Powered Video Intelligence</span>
+            <span>ClipForge AI v3.8 — Gemini Powered Video Intelligence</span>
             <span className="text-purple-400/60">|</span>
             <span className="text-slate-300 flex items-center gap-1">
               Next-Gen Pacing & Auto Captions

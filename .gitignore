@@ -6,3 +6,18 @@ coverage/
 *.log
 .env*
 !.env.example
+
+.firebase/
+.firebaserc
+
+.runtime/
+storage/
+*.local
+
+# Cloudflare Workers scaffolds that leaked onto main (not part of this app)
+/klipper/
+/api-worker/
+/server.ts
+
+# Lockfile regenerated on install (kept out until a networked env can pin it)
+bun.lock

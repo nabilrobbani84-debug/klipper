@@ -1,62 +1,24 @@
-export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
+import crypto from 'node:crypto';
+import type { IncomingMessage } from 'node:http';
+import { pino, type Logger } from 'pino';
+import { pinoHttp } from 'pino-http';
+import type { AppConfig } from './config.js';
 
-export interface LogContext {
-  requestId?: string;
-  userId?: string;
-  projectId?: string;
-  jobId?: string;
-  stage?: string;
-  durationMs?: number;
-  [key: string]: any;
+export function createLogger(config: Pick<AppConfig, 'LOG_LEVEL'>): Logger {
+  return pino({
+    level: config.LOG_LEVEL,
+    base: undefined,
+    redact: { paths: ['req.headers.authorization', 'req.headers.cookie', '*.password', '*.token'], remove: true },
+  });
 }
 
-export class Logger {
-  private static sanitize(obj: any): any {
-    if (!obj || typeof obj !== 'object') return obj;
-    const sanitized: any = Array.isArray(obj) ? [] : {};
-    for (const [key, value] of Object.entries(obj)) {
-      if (/key|secret|password|token|auth|cookie/i.test(key)) {
-        sanitized[key] = '***REDACTED***';
-      } else if (typeof value === 'object') {
-        sanitized[key] = Logger.sanitize(value);
-      } else {
-        sanitized[key] = value;
-      }
-    }
-    return sanitized;
-  }
-
-  public static info(message: string, context: LogContext = {}) {
-    Logger.log('info', message, context);
-  }
-
-  public static warn(message: string, context: LogContext = {}) {
-    Logger.log('warn', message, context);
-  }
-
-  public static error(message: string, context: LogContext = {}) {
-    Logger.log('error', message, context);
-  }
-
-  public static debug(message: string, context: LogContext = {}) {
-    if (process.env.DEBUG) {
-      Logger.log('debug', message, context);
-    }
-  }
-
-  private static log(level: LogLevel, message: string, context: LogContext) {
-    const entry = {
-      timestamp: new Date().toISOString(),
-      level,
-      message,
-      ...Logger.sanitize(context),
-    };
-    if (level === 'error') {
-      console.error(JSON.stringify(entry));
-    } else if (level === 'warn') {
-      console.warn(JSON.stringify(entry));
-    } else {
-      console.log(JSON.stringify(entry));
-    }
-  }
+export function requestLogger(logger: Logger) {
+  return pinoHttp({
+    logger,
+    genReqId: (req: IncomingMessage) => {
+      const header = req.headers['x-request-id'];
+      return typeof header === 'string' && /^[\w-]{8,64}$/.test(header) ? header : crypto.randomUUID();
+    },
+    autoLogging: { ignore: (req: IncomingMessage) => req.url === '/health' || req.url === '/ready' },
+  });
 }

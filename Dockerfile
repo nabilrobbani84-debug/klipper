@@ -1,46 +1,56 @@
-# Multi-Stage Production Dockerfile for ClipForge AI
-# Stage 1: Build Frontend Assets
-FROM node:22-slim AS builder
+# syntax=docker/dockerfile:1.7
+# ClipForge AI — multi-target image.
+#   target "app"    : API + built React frontend (same origin), no heavy media tooling
+#   target "worker" : queue worker with FFmpeg, yt-dlp, Whisper (CPU) and OpenCV
 
+FROM oven/bun:1 AS deps
 WORKDIR /app
+COPY package.json bun.loc[k] ./
+RUN bun install --no-frozen-lockfile
 
-COPY package*.json ./
-RUN npm ci
-
+FROM deps AS build
 COPY . .
-RUN npm run build
+# Same-origin deployment: the API serves the SPA, so no API URL is baked in.
+ENV VITE_API_URL=""
+RUN bun run build
 
-# Stage 2: Production Container with FFmpeg
-FROM node:22-slim AS runner
+FROM oven/bun:1 AS prod-deps
+WORKDIR /app
+COPY package.json bun.loc[k] ./
+RUN bun install --production --no-frozen-lockfile
 
+FROM node:22-bookworm-slim AS base
 WORKDIR /app
 ENV NODE_ENV=production
-ENV PORT=3000
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ca-certificates tini \
+  && rm -rf /var/lib/apt/lists/* \
+  && groupadd --system clipforge && useradd --system --gid clipforge --create-home --home-dir /home/clipforge clipforge \
+  && mkdir -p /data/storage /data/tmp && chown -R clipforge:clipforge /data
+COPY --from=prod-deps /app/node_modules ./node_modules
+COPY package.json ./
+COPY server ./server
+ENV STORAGE_DIR=/data/storage TEMP_DIR=/data/tmp
+ENTRYPOINT ["/usr/bin/tini", "--"]
 
-# Install FFmpeg and required audio/video codecs
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+FROM base AS app
+COPY --from=build /app/dist ./dist
+ENV PORT=8080 FRONTEND_DIST=/app/dist SERVE_FRONTEND=true
+USER clipforge
+EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||8080)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+CMD ["node", "--import", "tsx", "server/index.ts"]
 
-COPY package*.json ./
-RUN npm ci --omit=dev
-
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/server ./server
-COPY --from=builder /app/src/types ./src/types
-COPY --from=builder /app/src/data ./src/data
-COPY --from=builder /app/server.ts ./server.ts
-COPY --from=builder /app/tsconfig.json ./tsconfig.json
-
-# Create storage mounts
-RUN mkdir -p /app/storage/original \
-    /app/storage/projects \
-    /app/storage/clips \
-    /app/storage/exports \
-    /app/storage/thumbnails \
-    /app/storage/temp
-
-EXPOSE 3000
-
-CMD ["node", "--loader", "tsx", "server.ts"]
+FROM base AS worker
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends ffmpeg python3 python3-venv fonts-dejavu-core fonts-liberation2 fontconfig \
+  && rm -rf /var/lib/apt/lists/*
+RUN python3 -m venv /opt/venv \
+  && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+  && /opt/venv/bin/pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu \
+  && /opt/venv/bin/pip install --no-cache-dir openai-whisper yt-dlp opencv-python-headless
+ENV PATH="/opt/venv/bin:${PATH}" PYTHON_BIN=/opt/venv/bin/python XDG_CACHE_HOME=/data/cache
+RUN mkdir -p /data/cache && chown -R clipforge:clipforge /data
+USER clipforge
+CMD ["node", "--import", "tsx", "server/worker.ts"]

@@ -26,7 +26,6 @@ interface ClipCandidateListProps {
   onOpenSettings: () => void;
   onBatchExport: (selectedClips: ClipCandidate[]) => void;
   onOpenSocialModal: (clip: ClipCandidate) => void;
-  onOpenSmartReframe?: (clip: ClipCandidate) => void;
 }
 
 export const ClipCandidateList: React.FC<ClipCandidateListProps> = ({
@@ -36,17 +35,11 @@ export const ClipCandidateList: React.FC<ClipCandidateListProps> = ({
   onOpenSettings,
   onBatchExport,
   onOpenSocialModal,
-  onOpenSmartReframe,
 }) => {
   const [selectedIds, setSelectedIds] = useState<string[]>(project.clips.map(c => c.id));
   const [styleFilter, setStyleFilter] = useState<string>('all');
   const [sortBy, setSortBy] = useState<'score' | 'duration' | 'time'>('score');
   const [activePreviewClip, setActivePreviewClip] = useState<ClipCandidate | null>(null);
-  const [expandedScores, setExpandedScores] = useState<Record<string, boolean>>({});
-
-  const toggleScoreExpand = (id: string) => {
-    setExpandedScores(prev => ({ ...prev, [id]: !prev[id] }));
-  };
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev =>
@@ -289,87 +282,9 @@ export const ClipCandidateList: React.FC<ClipCandidateListProps> = ({
                 </div>
 
                 {/* Selection Reason */}
-                <div className="text-[11px] text-slate-400 bg-black/30 p-2.5 rounded-xl border border-white/5 mb-3">
+                <div className="text-[11px] text-slate-400 bg-black/30 p-2.5 rounded-xl border border-white/5 mb-4">
                   <span className="text-slate-300 font-semibold">Why AI selected this: </span>
                   {clip.viralityReason}
-                </div>
-
-                {/* 7-Factor Weighted Scoring Breakdown Toggle */}
-                <div className="mb-4">
-                  <button
-                    onClick={() => toggleScoreExpand(clip.id)}
-                    className="w-full py-1.5 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-slate-300 text-[11px] font-semibold flex items-center justify-between transition-all cursor-pointer border border-white/5"
-                  >
-                    <span className="flex items-center gap-1.5 text-purple-300">
-                      <TrendingUp className="w-3.5 h-3.5" />
-                      <span>7-Factor Viral Scoring Breakdown</span>
-                    </span>
-                    <span className="text-slate-400 font-mono text-[10px]">
-                      {expandedScores[clip.id] ? '▲ Hide Factors' : '▼ View 7 Factors'}
-                    </span>
-                  </button>
-
-                  {expandedScores[clip.id] && (
-                    <div className="mt-2 p-3 rounded-xl bg-black/60 border border-purple-500/20 text-[11px] space-y-2 animate-in fade-in duration-200">
-                      <div className="grid grid-cols-2 gap-x-3 gap-y-1.5">
-                        <div className="flex justify-between items-center text-slate-300">
-                          <span>Hook (25%):</span>
-                          <span className="font-mono font-bold text-emerald-400">
-                            {clip.scoringBreakdown?.hook ?? Math.min(98, clip.score + 2)}/100
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center text-slate-300">
-                          <span>Info Value (20%):</span>
-                          <span className="font-mono font-bold text-cyan-400">
-                            {clip.scoringBreakdown?.informationValue ?? Math.min(96, clip.score)}/100
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center text-slate-300">
-                          <span>Emotional Impact (15%):</span>
-                          <span className="font-mono font-bold text-pink-400">
-                            {clip.scoringBreakdown?.emotionalImpact ?? Math.max(78, clip.score - 4)}/100
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center text-slate-300">
-                          <span>Story Completeness (15%):</span>
-                          <span className="font-mono font-bold text-amber-400">
-                            {clip.scoringBreakdown?.storyCompleteness ?? Math.min(95, clip.score + 1)}/100
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center text-slate-300">
-                          <span>Pacing (10%):</span>
-                          <span className="font-mono font-bold text-purple-300">
-                            {clip.scoringBreakdown?.pacing ?? Math.max(82, clip.score - 2)}/100
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center text-slate-300">
-                          <span>Uniqueness (5%):</span>
-                          <span className="font-mono font-bold text-slate-200">
-                            {clip.scoringBreakdown?.uniqueness ?? Math.max(80, clip.score - 5)}/100
-                          </span>
-                        </div>
-                        <div className="flex justify-between items-center text-slate-300">
-                          <span>Context (10%):</span>
-                          <span className="font-mono font-bold text-indigo-300">
-                            {clip.scoringBreakdown?.context ?? Math.min(94, clip.score)}/100
-                          </span>
-                        </div>
-                      </div>
-
-                      {/* Mini Retention curve line */}
-                      <div className="pt-2 border-t border-white/10">
-                        <div className="flex items-center justify-between text-[10px] text-slate-400 mb-1">
-                          <span>Simulated Audience Retention Curve</span>
-                          <span className="text-emerald-400 font-mono">100% → ~78% payoff</span>
-                        </div>
-                        <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden flex">
-                          <div className="bg-emerald-400 h-full w-[40%]" />
-                          <div className="bg-cyan-400 h-full w-[35%]" />
-                          <div className="bg-purple-400 h-full w-[25%]" />
-                        </div>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
 
@@ -383,16 +298,6 @@ export const ClipCandidateList: React.FC<ClipCandidateListProps> = ({
                   <span>Edit Clip</span>
                 </button>
 
-                {onOpenSmartReframe && (
-                  <button
-                    onClick={() => onOpenSmartReframe(clip)}
-                    title="Active Speaker Smart Reframe 16:9 → 9:16"
-                    className="p-2.5 rounded-xl bg-purple-500/10 hover:bg-purple-500/20 text-purple-300 border border-purple-500/20 transition-colors cursor-pointer flex items-center gap-1 text-xs font-bold"
-                  >
-                    <span>9:16 Reframe</span>
-                  </button>
-                )}
-
                 <button
                   onClick={() => onOpenSocialModal(clip)}
                   title="Generate Title & Captions for TikTok, Reels, Shorts"
@@ -403,7 +308,7 @@ export const ClipCandidateList: React.FC<ClipCandidateListProps> = ({
 
                 <button
                   onClick={() => onQuickExport(clip)}
-                  className="py-2.5 px-3.5 rounded-xl text-xs font-bold text-white bg-white/10 hover:bg-white/15 border border-white/10 transition-colors flex items-center gap-1.5 cursor-pointer"
+                  className="py-2.5 px-4 rounded-xl text-xs font-bold text-white bg-white/10 hover:bg-white/15 border border-white/10 transition-colors flex items-center gap-1.5 cursor-pointer"
                 >
                   <Download className="w-3.5 h-3.5" />
                   <span>Export</span>
