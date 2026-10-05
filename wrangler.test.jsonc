@@ -1,0 +1,16 @@
+{
+  // Test-only config for @cloudflare/vitest-plugin: local D1 + R2 + queue producer.
+  // No containers, Workers AI, queue consumer or assets, so tests need no Docker or Cloudflare account.
+  "name": "clipforge-test",
+  "main": "worker/index.ts",
+  "compatibility_flags": ["nodejs_compat"],
+  "d1_databases": [{ "binding": "DB", "database_name": "clipforge-test", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }],
+  "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "clipforge-test" }],
+  "queues": { "producers": [{ "binding": "JOBS", "queue": "clipforge-test-jobs" }] },
+  "vars": {
+    "AUTH_SECRET": "test-secret-value-that-is-long-enough-123456",
+    "ALLOW_REGISTRATION": "true",
+    "ADMIN_EMAILS": "admin@example.com",
+    "APP_URL": "https://clipforge.test"
+  }
+}

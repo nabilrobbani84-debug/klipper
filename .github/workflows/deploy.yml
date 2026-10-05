@@ -1,0 +1,110 @@
+name: Deploy to Cloudflare
+
+# Deploys the whole platform (SPA + API Worker + queue consumer + cron + media container)
+# to Cloudflare. Skips cleanly until the CLOUDFLARE_API_TOKEN secret is configured.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-cloudflare
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - name: Check Cloudflare credentials
+        id: creds
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::notice::CLOUDFLARE_API_TOKEN / CLOUDFLARE_ACCOUNT_ID not set — skipping deploy. See DEPLOY.md."
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.creds.outputs.ready == 'true'
+      - uses: oven-sh/setup-bun@v2
+        if: steps.creds.outputs.ready == 'true'
+      - uses: actions/setup-node@v4
+        if: steps.creds.outputs.ready == 'true'
+        with:
+          node-version: 22
+      - name: Install dependencies
+        if: steps.creds.outputs.ready == 'true'
+        run: bun install --no-frozen-lockfile
+
+      - name: Ensure R2 bucket and queues exist
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          ensure() { out=$("$@" 2>&1) && echo "$out" || { echo "$out" | grep -qiE "already exists|already taken|code: 10004|code: 11009" && echo "exists: $*" || { echo "$out"; exit 1; }; }; }
+          ensure npx wrangler r2 bucket create clipforge-media
+          ensure npx wrangler queues create clipforge-jobs-dlq
+          ensure npx wrangler queues create clipforge-jobs
+
+      - name: Find or create the D1 database
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          id=$(npx wrangler d1 list --json | jq -r '.[] | select(.name=="clipforge-db") | .uuid' | head -1)
+          if [ -z "$id" ]; then
+            npx wrangler d1 create clipforge-db
+            id=$(npx wrangler d1 list --json | jq -r '.[] | select(.name=="clipforge-db") | .uuid' | head -1)
+          fi
+          if [ -z "$id" ]; then echo "::error::Could not resolve the clipforge-db D1 database ID"; exit 1; fi
+          sed -i "s/00000000-0000-0000-0000-000000000000/$id/" wrangler.jsonc
+          echo "D1 database: $id"
+
+      - name: Apply D1 migrations
+        if: steps.creds.outputs.ready == 'true'
+        run: npx wrangler d1 migrations apply DB --remote
+
+      - name: Build frontend
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          VITE_API_URL: ''
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+        run: bun run build
+
+      - name: Deploy Worker + container
+        if: steps.creds.outputs.ready == 'true'
+        run: |
+          args=(--var "ENVIRONMENT:production")
+          [ -n "${{ vars.ADMIN_EMAILS }}" ] && args+=(--var "ADMIN_EMAILS:${{ vars.ADMIN_EMAILS }}")
+          [ -n "${{ vars.VITE_FIREBASE_PROJECT_ID }}" ] && args+=(--var "FIREBASE_PROJECT_ID:${{ vars.VITE_FIREBASE_PROJECT_ID }}")
+          [ -n "${{ vars.APP_URL }}" ] && args+=(--var "APP_URL:${{ vars.APP_URL }}")
+          [ -n "${{ vars.ALLOW_REGISTRATION }}" ] && args+=(--var "ALLOW_REGISTRATION:${{ vars.ALLOW_REGISTRATION }}")
+          npx wrangler deploy "${args[@]}"
+
+      - name: Upload Worker secrets
+        if: steps.creds.outputs.ready == 'true'
+        env:
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          YTDLP_COOKIES: ${{ secrets.YTDLP_COOKIES }}
+        run: |
+          if [ ${#AUTH_SECRET} -lt 32 ]; then
+            echo "::error::Secret AUTH_SECRET (min 32 chars) is required. Generate with: openssl rand -base64 48"
+            exit 1
+          fi
+          jq -n --arg a "$AUTH_SECRET" --arg g "$GEMINI_API_KEY" --arg y "$YTDLP_COOKIES" \
+            '{AUTH_SECRET: $a} + (if $g != "" then {GEMINI_API_KEY: $g} else {} end) + (if $y != "" then {YTDLP_COOKIES: $y} else {} end)' \
+            > /tmp/secrets.json
+          npx wrangler secret bulk /tmp/secrets.json
+          rm -f /tmp/secrets.json
+
+      - name: Health check
+        if: steps.creds.outputs.ready == 'true' && vars.APP_URL != ''
+        run: |
+          for i in $(seq 1 10); do curl -fsS "${{ vars.APP_URL }}/health" && exit 0; sleep 6; done
+          echo "::warning::Health check did not pass yet"

@@ -17,5 +17,5 @@
     "noEmit": true
   },
   "include": ["src/**/*.ts", "src/**/*.tsx", "vite.config.ts"],
-  "exclude": ["server", "node_modules"]
+  "exclude": ["node_modules"]
 }
