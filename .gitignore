@@ -18,3 +18,6 @@ storage/
 /klipper/
 /api-worker/
 /server.ts
+
+# Lockfile regenerated on install (kept out until a networked env can pin it)
+bun.lock

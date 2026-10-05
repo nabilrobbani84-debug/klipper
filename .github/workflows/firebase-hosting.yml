@@ -28,7 +28,7 @@ jobs:
         if: env.HAS_FIREBASE == 'true'
       - name: Install dependencies
         if: env.HAS_FIREBASE == 'true'
-        run: bun install
+        run: bun install --no-frozen-lockfile
       - name: Build
         if: env.HAS_FIREBASE == 'true'
         run: bun run build

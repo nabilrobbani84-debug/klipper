@@ -38,7 +38,7 @@ jobs:
       - name: Install system media tools (ffmpeg, fonts)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - name: Install dependencies
-        run: bun install
+        run: bun install --no-frozen-lockfile
       - name: Typecheck (frontend + server)
         run: bun run lint
       - name: Unit, API, database and FFmpeg integration tests
