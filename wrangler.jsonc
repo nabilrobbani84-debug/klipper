@@ -1,0 +1,71 @@
+{
+  // ClipForge AI — single Cloudflare Worker serving the SPA, the /api/v1 API, signed media,
+  // the job-queue consumer and the hourly maintenance cron. Media work runs in Cloudflare Containers.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "clipforge",
+  "main": "worker/index.ts",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+
+  // React build output. API/media routes run the Worker first; everything else is the SPA.
+  "assets": {
+    "directory": "./dist",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*", "/media/*", "/health", "/ready"]
+  },
+
+  // The deploy workflow replaces database_id with the real ID (it creates the database if needed).
+  "d1_databases": [
+    { "binding": "DB", "database_name": "clipforge-db", "database_id": "00000000-0000-0000-0000-000000000000", "migrations_dir": "migrations" }
+  ],
+  "r2_buckets": [{ "binding": "MEDIA_BUCKET", "bucket_name": "clipforge-media" }],
+  "queues": {
+    "producers": [{ "binding": "JOBS", "queue": "clipforge-jobs" }],
+    "consumers": [
+      { "queue": "clipforge-jobs", "max_batch_size": 1, "max_batch_timeout": 1, "max_retries": 3, "retry_delay": 15, "dead_letter_queue": "clipforge-jobs-dlq", "max_concurrency": 10 }
+    ]
+  },
+  "ai": { "binding": "AI" },
+
+  "containers": [
+    {
+      "class_name": "MediaContainer",
+      "image": "./container/Dockerfile",
+      "image_build_context": ".",
+      // 1 vCPU / 6 GiB / 12 GB disk — enough for 1080p downloads and H.264 renders.
+      "instance_type": "standard-2",
+      "max_instances": 10
+    }
+  ],
+  "durable_objects": { "bindings": [{ "name": "MEDIA", "class_name": "MediaContainer" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["MediaContainer"] }],
+
+  "ratelimits": [
+    { "name": "AUTH_LIMITER", "namespace_id": "71001", "simple": { "limit": 20, "period": 60 } },
+    { "name": "API_LIMITER", "namespace_id": "71002", "simple": { "limit": 300, "period": 60 } }
+  ],
+  "triggers": { "crons": ["17 * * * *"] },
+  "limits": { "cpu_ms": 300000 },
+
+  // Non-secret settings. Secrets (AUTH_SECRET, GEMINI_API_KEY, YTDLP_COOKIES) are set with `wrangler secret put`.
+  "vars": {
+    "ALLOW_REGISTRATION": "true",
+    "ADMIN_EMAILS": "",
+    "FIREBASE_PROJECT_ID": "",
+    "SESSION_TTL_HOURS": "336",
+    "MEDIA_URL_TTL_SECONDS": "21600",
+    "MAX_VIDEO_DURATION_SECONDS": "14400",
+    "SOURCE_RETENTION_DAYS": "30",
+    "EXPORT_RETENTION_DAYS": "90",
+    "GEMINI_MODEL": "gemini-2.5-flash",
+    "TEXT_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+    "WHISPER_MODEL": "@cf/openai/whisper-large-v3-turbo",
+    "AUDIO_CHUNK_SECONDS": "240",
+    "YTDLP_MAX_HEIGHT": "1080",
+    "FACE_DETECTION": "true",
+    "CAPTION_FONT": "DejaVu Sans",
+    "WATERMARK_TEXT": "ClipForge AI"
+  }
+}

@@ -21,3 +21,7 @@ storage/
 
 # Lockfile regenerated on install (kept out until a networked env can pin it)
 bun.lock
+
+# Wrangler local state and secrets
+.wrangler/
+.dev.vars*

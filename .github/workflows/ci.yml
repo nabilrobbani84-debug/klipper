@@ -16,19 +16,6 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_USER: clipforge
-          POSTGRES_PASSWORD: clipforge
-          POSTGRES_DB: clipforge_test
-        ports: ['5432:5432']
-        options: >-
-          --health-cmd "pg_isready -U clipforge -d clipforge_test"
-          --health-interval 5s --health-timeout 5s --health-retries 10
-    env:
-      TEST_DATABASE_URL: postgres://clipforge:clipforge@localhost:5432/clipforge_test
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -39,41 +26,38 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - name: Install dependencies
         run: bun install --no-frozen-lockfile
-      - name: Typecheck (frontend + server)
+      - name: Typecheck (frontend, Worker, container)
         run: bun run lint
-      - name: Unit, API, database and FFmpeg integration tests
-        run: bun run test
+      - name: Unit + FFmpeg integration tests
+        run: bun run test:unit
+      - name: Worker API tests (D1/R2/Queues in workerd)
+        run: bun run test:worker
       - name: Build frontend
         run: bun run build
       - name: Dependency audit (high and above)
         run: bun audit --audit-level high
         continue-on-error: true
 
-  docker:
+  container:
     runs-on: ubuntu-latest
     needs: verify
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      - name: Build app image
+      - name: Build media container image
         uses: docker/build-push-action@v6
         with:
           context: .
-          target: app
-          push: false
-          tags: clipforge-app:ci
-          cache-from: type=gha,scope=app
-          cache-to: type=gha,mode=max,scope=app
-      - name: Build worker image
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          target: worker
+          file: container/Dockerfile
           push: false
           load: true
-          tags: clipforge-worker:ci
-          cache-from: type=gha,scope=worker
-          cache-to: type=gha,mode=max,scope=worker
-      - name: Smoke test worker toolchain
+          tags: clipforge-media:ci
+          cache-from: type=gha,scope=media
+          cache-to: type=gha,mode=max,scope=media
+      - name: Smoke test container toolchain and server
         run: |
-          docker run --rm --entrypoint sh clipforge-worker:ci -c "ffmpeg -version | head -1 && yt-dlp --version && whisper --help >/dev/null && python3 -c 'import cv2; print(cv2.__version__)' && fc-list | grep -qi dejavu && echo toolchain-ok"
+          docker run --rm --entrypoint sh clipforge-media:ci -c "ffmpeg -version | head -1 && yt-dlp --version && python3 -c 'import cv2; print(cv2.__version__)' && fc-list | grep -qi dejavu && echo toolchain-ok"
+          docker run -d --name media -p 8080:8080 clipforge-media:ci
+          for i in $(seq 1 30); do curl -fsS http://localhost:8080/ping && break; sleep 1; done
+          curl -fsS http://localhost:8080/ping
+          docker rm -f media
