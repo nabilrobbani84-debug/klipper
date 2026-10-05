@@ -25,14 +25,24 @@ jobs:
       - name: Install system media tools (ffmpeg, fonts)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ffmpeg fonts-dejavu-core
       - name: Install dependencies
+        id: install
         run: bun install --no-frozen-lockfile
-      - name: Typecheck (frontend, Worker, container)
-        run: bun run lint
+      - name: Typecheck frontend
+        run: npx tsc --noEmit
+      - name: Typecheck Worker
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npx tsc -p tsconfig.worker.json
+      - name: Typecheck container
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npx tsc -p tsconfig.container.json
       - name: Unit + FFmpeg integration tests
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run test:unit
       - name: Worker API tests (D1/R2/Queues in workerd)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run test:worker
       - name: Build frontend
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: bun run build
       - name: Dependency audit (high and above)
         run: bun audit --audit-level high

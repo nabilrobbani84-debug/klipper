@@ -73,7 +73,7 @@ export function normalizeClips(raw: RawCandidate[], transcript: TranscriptDocume
   return selected
     .sort((a, b) => a.start - b.start)
     .map((candidate) => ({
-      id: `clip-${globalThis.crypto.randomUUID()}`,
+      id: `clip-${crypto.randomUUID()}`,
       start: candidate.start,
       end: candidate.end,
       duration: Number((candidate.end - candidate.start).toFixed(3)),
