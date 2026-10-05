@@ -1,36 +1,44 @@
-name: Deploy to Firebase Hosting
+name: Deploy frontend to Firebase Hosting (optional)
+
+# Optional static-frontend deployment. The full product (API + worker) is deployed with Docker
+# (see DEPLOY.md). This workflow only runs when the FIREBASE_SERVICE_ACCOUNT secret exists and
+# VITE_API_URL points at your deployed API.
 
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 permissions:
   contents: read
   checks: write
-  pull-requests: write
 
 jobs:
   deploy:
-    # Secrets are not available to PRs from forks, so skip those.
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    env:
+      HAS_FIREBASE: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' && vars.FIREBASE_PROJECT_ID != '' }}
     steps:
+      - name: Skip when Firebase is not configured
+        if: env.HAS_FIREBASE != 'true'
+        run: echo "FIREBASE_SERVICE_ACCOUNT secret or FIREBASE_PROJECT_ID variable not set; skipping Firebase deploy."
       - uses: actions/checkout@v4
-
+        if: env.HAS_FIREBASE == 'true'
       - uses: oven-sh/setup-bun@v2
-
+        if: env.HAS_FIREBASE == 'true'
       - name: Install dependencies
+        if: env.HAS_FIREBASE == 'true'
         run: bun install
-
       - name: Build
+        if: env.HAS_FIREBASE == 'true'
         run: bun run build
-
-      - name: Deploy (live on main, preview channel on PRs)
+        env:
+          VITE_API_URL: ${{ vars.VITE_API_URL }}
+      - name: Deploy to live channel
+        if: env.HAS_FIREBASE == 'true'
         uses: FirebaseExtended/action-hosting-deploy@v0
         with:
           repoToken: ${{ secrets.GITHUB_TOKEN }}
           firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
           projectId: ${{ vars.FIREBASE_PROJECT_ID }}
-          channelId: ${{ github.event_name != 'pull_request' && 'live' || '' }}
+          channelId: live

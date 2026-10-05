@@ -1,4 +1,4 @@
-import type { ErrorRequestHandler, Request, Response, NextFunction } from 'express';
+import type { ErrorRequestHandler, NextFunction, Request, Response } from 'express';
 import type { ZodError } from 'zod';
 import type { ApiEnvelope } from './types.js';
 
@@ -27,19 +27,26 @@ export function formatZodError(error: ZodError): AppError {
   return validationError(message);
 }
 
+/** Converts unknown errors into a safe AppError for persisting on jobs. */
+export function toAppError(error: unknown, fallbackCode = 'JOB_FAILED', fallbackMessage = 'Processing failed. Please retry the job.'): AppError {
+  return error instanceof AppError ? error : new AppError(fallbackCode, fallbackMessage, 500, true);
+}
+
 export function errorHandler(): ErrorRequestHandler {
   return (error: unknown, req: Request, res: Response<ApiEnvelope<null>>, _next: NextFunction) => {
     const appError = error instanceof AppError ? error : new AppError('INTERNAL_ERROR', 'The request could not be completed.', 500, false);
     const requestId = String(req.id ?? 'unknown');
-    const internalMessage = error instanceof Error ? error.message : String(error);
-    req.log?.error({ err: error, requestId, code: appError.code }, 'request failed');
-    const message = appError.expose ? appError.message : 'The request could not be completed.';
+    if (appError.statusCode >= 500) req.log?.error({ err: error, requestId, code: appError.code, userId: req.user?.id }, 'request failed');
+    else req.log?.warn({ requestId, code: appError.code, userId: req.user?.id }, appError.message);
+    if (res.headersSent) {
+      res.end();
+      return;
+    }
     res.status(appError.statusCode).json({
       success: false,
       data: null,
-      error: { code: appError.code, message },
+      error: { code: appError.code, message: appError.expose ? appError.message : 'The request could not be completed.' },
       requestId,
     });
-    void internalMessage;
   };
 }

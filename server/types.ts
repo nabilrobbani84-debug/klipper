@@ -15,10 +15,14 @@ export type JobState =
   | 'FAILED'
   | 'CANCELLED';
 
+export const TERMINAL_JOB_STATES: readonly JobState[] = ['COMPLETED', 'FAILED', 'CANCELLED'];
+
+export type UserRole = 'user' | 'admin';
+
 export interface AuthenticatedUser {
   id: string;
   email?: string;
-  role?: 'user' | 'admin';
+  role?: UserRole;
 }
 
 export interface MediaMetadata {
@@ -55,6 +59,55 @@ export interface TranscriptDocument {
   segments: TranscriptSegment[];
 }
 
+export type AspectRatio = '9:16' | '16:9' | '1:1' | '4:5';
+export const ASPECT_RATIOS: readonly AspectRatio[] = ['9:16', '16:9', '1:1', '4:5'];
+export function isAspectRatio(value: unknown): value is AspectRatio {
+  return typeof value === 'string' && (ASPECT_RATIOS as readonly string[]).includes(value);
+}
+export type RenderQuality = 'draft' | 'standard' | 'high' | 'ultra';
+export type OutputResolution = '720p' | '1080p' | '1440p' | '4K';
+
+/** Caption styling persisted from the editor. Mirrors the frontend CaptionConfig. */
+export interface CaptionSettings {
+  enabled: boolean;
+  preset: string;
+  fontFamily: string;
+  fontSize: number;
+  textColor: string;
+  highlightColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  backgroundColor: string;
+  hasBackground: boolean;
+  positionY: number;
+  uppercase: boolean;
+  karaokeEffect: boolean;
+  maxWordsPerLine: number;
+}
+
+/** Reframe settings persisted from the editor. panX/panY are 0-100 percentages. */
+export interface ReframingSettings {
+  mode: 'center' | 'speaker' | 'face' | 'object' | 'manual';
+  panX: number;
+  panY: number;
+  zoom: number;
+}
+
+export interface AudioSettings {
+  noiseReduction: boolean;
+  voiceEnhance: boolean;
+  compressor: boolean;
+  loudnessNorm: boolean;
+  volume: number;
+}
+
+export interface ClipEditorState {
+  captions: CaptionSettings;
+  reframing: ReframingSettings;
+  audio: AudioSettings;
+  aspectRatio: AspectRatio;
+}
+
 export interface ClipCandidate {
   id: string;
   start: number;
@@ -65,36 +118,20 @@ export interface ClipCandidate {
   hook: string;
   reason: string;
   transcript: string;
-  captions?: CaptionSettings;
-  reframing?: ReframingSettings;
-}
-
-export interface CaptionSettings {
-  preset: 'podcast' | 'bold' | 'minimal' | 'karaoke' | 'motivation' | 'gaming' | 'education';
-  fontFamily: string;
-  fontSize: number;
-  textColor: string;
-  highlightColor: string;
-  outlineColor: string;
-  position: 'top' | 'center' | 'bottom';
-  maxWordsPerLine: number;
-  activeWord: boolean;
-}
-
-export interface ReframingSettings {
-  mode: 'center' | 'face' | 'active-speaker' | 'left' | 'right' | 'custom';
-  x: number;
-  y: number;
-  zoom: number;
+  editor?: Partial<ClipEditorState>;
 }
 
 export interface ExportRecord {
   id: string;
   projectId: string;
   clipId: string;
+  clipTitle: string;
+  projectName: string;
+  thumbnailUrl: string | null;
   storageKey: string;
   contentType: string;
   sizeBytes: number;
+  settings: Record<string, unknown>;
   createdAt: string;
 }
 
@@ -108,6 +145,7 @@ export interface ProjectRecord {
   metadata: MediaMetadata | null;
   transcript: TranscriptDocument | null;
   clips: ClipCandidate[];
+  latestJobId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -126,15 +164,6 @@ export interface JobRecord {
   updatedAt: string;
 }
 
-export interface CreateProjectInput {
-  youtubeUrl: string;
-  contentGoal?: string;
-  hookType?: string;
-  preferredDuration?: number;
-  aspectRatio?: '9:16' | '16:9' | '1:1' | '4:5';
-  requestedClipCount?: number;
-}
-
 export interface AnalysisJobPayload {
   kind: 'analysis';
   jobId: string;
@@ -144,16 +173,25 @@ export interface AnalysisJobPayload {
   sourceVideoId: string;
   preferredDuration: number;
   requestedClipCount: number;
+  contentGoal?: string;
+  hookType?: string;
 }
 
-export interface RenderJobPayload {
+export interface RenderOptions {
+  resolution: OutputResolution;
+  fps: 24 | 30 | 60;
+  format: 'mp4' | 'mov';
+  codec: 'h264' | 'h265';
+  aspectRatio: AspectRatio;
+  quality: RenderQuality;
+}
+
+export interface RenderJobPayload extends RenderOptions {
   kind: 'render';
   jobId: string;
   projectId: string;
   userId: string;
   clipId: string;
-  quality: 'draft' | 'standard' | 'high' | 'ultra';
-  aspectRatio: '9:16' | '16:9' | '1:1' | '4:5';
 }
 
 export type QueuePayload = AnalysisJobPayload | RenderJobPayload;

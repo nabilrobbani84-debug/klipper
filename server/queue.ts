@@ -1,16 +1,21 @@
-import IORedis from 'ioredis';
+import { Redis } from 'ioredis';
 import { Queue } from 'bullmq';
 import type { AppConfig } from './config.js';
 import type { QueuePayload } from './types.js';
 
 export const QUEUE_NAME = 'clipforge-processing';
 
-export function createRedisConnection(config: AppConfig) {
-  return new IORedis(config.REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: true });
+export function createRedisConnection(config: Pick<AppConfig, 'REDIS_URL'>): Redis {
+  return new Redis(config.REDIS_URL, { maxRetriesPerRequest: null, enableReadyCheck: true });
 }
 
-export function createProcessingQueue(config: AppConfig) {
+export type ProcessingQueue = Pick<Queue<QueuePayload>, 'add' | 'getJob' | 'waitUntilReady' | 'close' | 'getJobCounts' | 'getWorkersCount'>;
+
+export function createProcessingQueue(config: Pick<AppConfig, 'REDIS_URL'>) {
   const connection = createRedisConnection(config);
-  const queue = new Queue<QueuePayload>(QUEUE_NAME, { connection, defaultJobOptions: { attempts: 2, backoff: { type: 'exponential', delay: 5000 }, removeOnComplete: 100, removeOnFail: 500 } });
+  const queue = new Queue<QueuePayload>(QUEUE_NAME, {
+    connection,
+    defaultJobOptions: { attempts: 1, removeOnComplete: 500, removeOnFail: 1000 },
+  });
   return { queue, connection };
 }
