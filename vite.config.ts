@@ -5,7 +5,7 @@ import { defineConfig } from 'vite';
 
 const apiTarget = process.env.API_PROXY_TARGET ?? 'http://localhost:8080';
 
-export default defineConfig(() => ({
+export default defineConfig({
   plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
@@ -14,23 +14,15 @@ export default defineConfig(() => ({
   },
   build: {
     sourcemap: false,
-    chunkSizeWarningLimit: 900,
-    rollupOptions: {
-      output: {
-        manualChunks: {
-          react: ['react', 'react-dom'],
-          ui: ['lucide-react', 'motion'],
-        },
-      },
-    },
+    chunkSizeWarningLimit: 1200,
   },
   server: {
     hmr: process.env.DISABLE_HMR !== 'true',
     watch: process.env.DISABLE_HMR === 'true' ? null : {},
-    // In development the API runs separately; proxy keeps the browser same-origin like production.
+    // In development the API runs separately; the proxy keeps the browser same-origin like production.
     proxy: {
       '/api': { target: apiTarget, changeOrigin: true },
       '/media': { target: apiTarget, changeOrigin: true },
     },
   },
-}));
+});

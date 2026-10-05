@@ -15,6 +15,7 @@ import { DEFAULT_AUDIO, DEFAULT_CAPTIONS, DEFAULT_REFRAMING } from '../data/samp
 
 export interface BackendJob {
   id: string;
+  userId: string;
   projectId: string;
   kind: 'analysis' | 'render';
   state: string;
