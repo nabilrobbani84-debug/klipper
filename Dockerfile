@@ -1,5 +1,4 @@
 # syntax=docker/dockerfile:1.7
-# syntax=docker/dockerfile:1.7
 # ClipForge AI — multi-target image.
 #   target "app"    : API + built React frontend (same origin), no heavy media tooling
 #   target "worker" : queue worker with FFmpeg, yt-dlp, Whisper (CPU) and OpenCV
